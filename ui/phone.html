@@ -1,0 +1,859 @@
+<div data-shiyu-phone></div>
+<style>
+:host, [data-shiyu-phone] {
+  --phone-bg: #111318;
+  --phone-panel: #1b2028;
+  --phone-panel-2: #222a35;
+  --phone-line: #303844;
+  --phone-text: #f3f0e8;
+  --phone-muted: #9fa9b8;
+  --phone-teal: #7bd4c3;
+  --phone-amber: #f0b35a;
+  --phone-coral: #ef7d73;
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+[data-shiyu-phone] {
+  color: var(--phone-text);
+  position: relative;
+  z-index: 20;
+}
+
+.phone-launcher {
+  position: fixed;
+  right: 18px;
+  bottom: calc(var(--tavo-inset-bottom-input, 0px) + 18px);
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--phone-line);
+  border-radius: 17px;
+  background: var(--phone-bg);
+  color: var(--phone-teal);
+  box-shadow: 0 12px 32px #0008;
+  cursor: grab;
+}
+
+.phone-shell {
+  position: fixed;
+  right: 14px;
+  top: calc(var(--tavo-inset-top-bar, 0px) + 14px);
+  bottom: calc(var(--tavo-inset-bottom-input, 0px) + 14px);
+  width: min(390px, calc(100vw - 28px));
+  min-height: 500px;
+  overflow: hidden;
+  border: 1px solid #ffffff18;
+  border-radius: 28px;
+  background: var(--phone-bg);
+  box-shadow: 0 24px 80px #000b;
+}
+
+.phone-shell[hidden], .phone-launcher[hidden] { display: none; }
+.phone-topbar { display:flex; align-items:center; justify-content:space-between; padding: 18px 18px 12px; }
+.phone-identity { color: var(--phone-teal); font-size: 12px; }
+.phone-title { margin: 0; font-size: 20px; }
+.phone-close, .phone-back { border: 0; background: transparent; color: var(--phone-muted); cursor: pointer; }
+.phone-content { height: calc(100% - 110px); overflow-y: auto; padding: 0 16px 18px; }
+.phone-home-grid { display:grid; grid-template-columns:1fr; gap:12px; padding-top:16px; }
+.phone-app-card { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--phone-line); border-radius:18px; padding:16px; background:var(--phone-panel); color:var(--phone-text); text-align:left; cursor:pointer; }
+.phone-app-card small { color: var(--phone-muted); }
+.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:10px 12px 12px; border-top:1px solid var(--phone-line); background:var(--phone-panel); }
+.phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:8px 2px; font-size:11px; cursor:pointer; }
+.phone-nav button[aria-current="page"] { color:var(--phone-teal); }
+.phone-section { display:grid; gap:12px; }
+.phone-card { border:1px solid var(--phone-line); border-radius:16px; background:var(--phone-panel); padding:14px; }
+.phone-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.phone-muted { color:var(--phone-muted); }
+.phone-pill { border-radius:999px; padding:4px 8px; background:var(--phone-panel-2); color:var(--phone-muted); font-size:11px; }
+.phone-button { border:1px solid var(--phone-line); border-radius:10px; background:var(--phone-panel-2); color:var(--phone-text); padding:8px 10px; cursor:pointer; }
+.phone-button.primary { background:var(--phone-teal); color:#10201d; border-color:transparent; }
+.phone-field { display:grid; gap:6px; }
+.phone-field label { color:var(--phone-muted); font-size:12px; }
+.phone-field input, .phone-field textarea, .phone-field select { width:100%; box-sizing:border-box; border:1px solid var(--phone-line); border-radius:10px; background:#10151c; color:var(--phone-text); padding:9px; }
+.phone-feed { display:grid; gap:10px; }
+.phone-feed article { border-left:2px solid var(--phone-teal); padding-left:12px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+
+</style>
+<script>
+(() => {
+  // src/core/storage.js
+  var STATE_KEY = "shiyuPhone.state";
+  var CHAT_LINK_PREFIX = "shiyuPhone.chat.";
+  var DEFAULT_PHONE_STATE = {
+    schemaVersion: 1,
+    activeIdentityId: "user:default",
+    identities: [{
+      id: "user:default",
+      kind: "user",
+      name: "\u7528\u6237",
+      profile: { bio: "" },
+      settings: { proactiveEnabled: false, roleDialogueEnabled: false }
+    }],
+    candidates: [],
+    threads: {},
+    moments: [],
+    github: { owner: "", repo: "", branch: "main", rootPath: "", token: "" },
+    detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 }
+  };
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+  function mergeDefaults(value) {
+    const input = value && typeof value === "object" ? value : {};
+    return {
+      ...clone(DEFAULT_PHONE_STATE),
+      ...input,
+      identities: Array.isArray(input.identities) && input.identities.length ? input.identities : clone(DEFAULT_PHONE_STATE.identities),
+      threads: input.threads && typeof input.threads === "object" ? input.threads : {},
+      moments: Array.isArray(input.moments) ? input.moments : [],
+      github: { ...clone(DEFAULT_PHONE_STATE.github), ...input.github || {} },
+      detection: { ...clone(DEFAULT_PHONE_STATE.detection), ...input.detection || {} }
+    };
+  }
+  async function variableGet(variable, scope, name, chatId) {
+    if (!variable?.get) return null;
+    const options = scope === "chat" ? { scope, chatId } : { scope };
+    try {
+      return await variable.get(name, options);
+    } catch {
+      try {
+        return await variable.get(scope, name, chatId);
+      } catch {
+        return null;
+      }
+    }
+  }
+  async function variableSet(variable, scope, name, value, chatId) {
+    if (!variable?.set) throw new Error("Tavo variable API is unavailable");
+    const options = scope === "chat" ? { scope, chatId } : { scope };
+    try {
+      return await variable.set(name, value, options);
+    } catch {
+      return variable.set(scope, name, value, chatId);
+    }
+  }
+  function createStorage(tavo2) {
+    const variable = tavo2?.variable;
+    return {
+      async loadGlobal() {
+        return mergeDefaults(await variableGet(variable, "global", STATE_KEY));
+      },
+      async saveGlobal(state) {
+        await variableSet(variable, "global", STATE_KEY, mergeDefaults(state));
+      },
+      async loadChatLink(chatId) {
+        const value = await variableGet(variable, "chat", `${CHAT_LINK_PREFIX}${chatId}`, chatId);
+        return value && typeof value === "object" ? value : {
+          chatId,
+          completedRounds: 0,
+          lastAnalyzedMessageId: null,
+          digest: ""
+        };
+      },
+      async saveChatLink(chatId, patch) {
+        const current = await this.loadChatLink(chatId);
+        await variableSet(variable, "chat", `${CHAT_LINK_PREFIX}${chatId}`, { ...current, ...patch }, chatId);
+      }
+    };
+  }
+
+  // src/tavo/adapter.js
+  function getText(result) {
+    if (typeof result === "string") return result;
+    if (result && typeof result.text === "string") return result.text;
+    if (result && typeof result.content === "string") return result.content;
+    return result ?? "";
+  }
+  function optionsWithRequestId(requestId) {
+    return requestId ? { clientRequestId: requestId } : void 0;
+  }
+  function createTavoAdapter(tavo2) {
+    return {
+      async currentChat() {
+        return tavo2?.chat?.current?.() ?? null;
+      },
+      async listMessages(chatId, query = {}) {
+        if (tavo2?.message?.find) return tavo2.message.find(query.range || [-100, -1], query.filter || {});
+        return [];
+      },
+      async oneOffGenerate(prompt, options = {}) {
+        if (!tavo2?.generate) throw new Error("Tavo generation API is unavailable");
+        return getText(await tavo2.generate(prompt, options));
+      },
+      async findCharacters(query = {}) {
+        return tavo2?.character?.search ? tavo2.character.search(query) : [];
+      },
+      async createCharacter(character, requestId) {
+        if (!tavo2?.character?.create) throw new Error("Tavo character API is unavailable");
+        return tavo2.character.create(character, optionsWithRequestId(requestId));
+      },
+      async createPersona(persona, requestId) {
+        if (!tavo2?.persona?.create) throw new Error("Tavo persona API is unavailable");
+        return tavo2.persona.create(persona, optionsWithRequestId(requestId));
+      },
+      async createLorebook(lorebook, requestId) {
+        if (!tavo2?.lorebook?.create) throw new Error("Tavo lorebook API is unavailable");
+        return tavo2.lorebook.create(lorebook, optionsWithRequestId(requestId));
+      },
+      async createPreset(preset, requestId) {
+        if (!tavo2?.preset?.create) throw new Error("Tavo preset API is unavailable");
+        return tavo2.preset.create(preset, optionsWithRequestId(requestId));
+      },
+      async appendMessage(chatId, message, requestId) {
+        if (!tavo2?.message?.append) throw new Error("Tavo message API is unavailable");
+        return tavo2.message.append({ ...message, chatId }, optionsWithRequestId(requestId));
+      },
+      async generateChat(chatId, prompt, options = {}) {
+        return this.oneOffGenerate(prompt, { ...options, context: options.context ?? false, chatId });
+      }
+    };
+  }
+
+  // src/github/client.js
+  var API_ROOT = "https://api.github.com";
+  function encodePath(path) {
+    return path.split("/").filter(Boolean).map((part) => encodeURIComponent(part)).join("/");
+  }
+  function decodeBase64(value) {
+    const normalized = String(value || "").replace(/\s/g, "");
+    if (typeof atob === "function") {
+      const bytes = Uint8Array.from(atob(normalized), (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+    return Buffer.from(normalized, "base64").toString("utf8");
+  }
+  var GitHubClient = class {
+    constructor({ fetchImpl = globalThis.fetch, apiRoot = API_ROOT, timeoutMs = 12e3 } = {}) {
+      this.fetchImpl = fetchImpl;
+      this.apiRoot = apiRoot.replace(/\/$/, "");
+      this.timeoutMs = timeoutMs;
+    }
+    headers(config) {
+      const headers = { Accept: "application/vnd.github+json" };
+      if (config?.token) headers.Authorization = `Bearer ${config.token}`;
+      return headers;
+    }
+    async request(config, path) {
+      if (!config?.owner || !config?.repo) {
+        const error = new Error("GitHub owner and repo are required");
+        error.code = "github_config";
+        throw error;
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await this.fetchImpl(`${this.apiRoot}${path}`, {
+          headers: this.headers(config),
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          const error = new Error(`GitHub request failed (${response.status})`);
+          error.code = response.status === 401 ? "github_auth" : response.status === 403 ? "github_rate_limit" : response.status === 404 ? "github_not_found" : "github_http";
+          error.status = response.status;
+          throw error;
+        }
+        return response.json();
+      } catch (error) {
+        if (error.name === "AbortError") {
+          const timeout = new Error("GitHub request timed out");
+          timeout.code = "github_timeout";
+          throw timeout;
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    async testConnection(config) {
+      const repo = await this.request(config, `/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}`);
+      return { ok: true, fullName: repo.full_name, defaultBranch: repo.default_branch };
+    }
+    async listFiles(config) {
+      const branch = encodeURIComponent(config.branch || "main");
+      const data = await this.request(config, `/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/git/trees/${branch}?recursive=1`);
+      const root = (config.rootPath || "").replace(/^\/+|\/+$/g, "");
+      return (data.tree || []).filter((item) => item.type === "blob" && (!root || item.path === root || item.path.startsWith(`${root}/`)));
+    }
+    async readFile(config, path) {
+      const branch = encodeURIComponent(config.branch || "main");
+      const data = await this.request(config, `/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${encodePath(path)}?ref=${branch}`);
+      const isBinary = /\.(png|webp|jpe?g|gif)$/i.test(path);
+      return { path, text: isBinary ? "" : decodeBase64(data.content), base64: isBinary ? void 0 : data.content, bytesBase64: isBinary ? data.content : void 0, sha: data.sha, size: data.size };
+    }
+  };
+
+  // src/github/classifier.js
+  function jsonFromFile(file) {
+    if (typeof file.text !== "string") return null;
+    try {
+      return JSON.parse(file.text);
+    } catch {
+      return null;
+    }
+  }
+  function decodePngCharacter(file) {
+    if (!file?.bytesBase64) return null;
+    let bytes;
+    try {
+      if (typeof atob === "function") bytes = Uint8Array.from(atob(file.bytesBase64.replace(/\s/g, "")), (char) => char.charCodeAt(0));
+      else bytes = Uint8Array.from(Buffer.from(file.bytesBase64, "base64"));
+    } catch {
+      return null;
+    }
+    if (bytes.length < 8 || bytes[0] !== 137 || bytes[1] !== 80 || bytes[2] !== 78 || bytes[3] !== 71) return null;
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+      const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+      const type = String.fromCharCode(...bytes.slice(offset + 4, offset + 8));
+      const data = bytes.slice(offset + 8, offset + 8 + length);
+      if (type === "tEXt") {
+        const zero = data.indexOf(0);
+        const key = new TextDecoder("latin1").decode(data.slice(0, zero));
+        if (key.toLowerCase() === "chara") {
+          try {
+            const encoded = new TextDecoder("latin1").decode(data.slice(zero + 1));
+            const binary = typeof atob === "function" ? atob(encoded) : Buffer.from(encoded, "base64").toString("binary");
+            const jsonText = typeof atob === "function" ? new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))) : Buffer.from(binary, "binary").toString("utf8");
+            return JSON.parse(jsonText);
+          } catch {
+            return null;
+          }
+        }
+      }
+      offset += 12 + length;
+    }
+    return null;
+  }
+  function isCharacter(value) {
+    if (!value || typeof value !== "object") return false;
+    if (value.spec && value.data?.name) return String(value.spec).startsWith("chara_card");
+    if (value.character?.name || value.character?.data?.name) return true;
+    return Boolean(value.name && value.description && (value.first_mes || value.firstMessage));
+  }
+  function isLorebook(value) {
+    return Boolean(value && typeof value === "object" && value.name && value.entries && !isCharacter(value));
+  }
+  function isPreset(value) {
+    if (!value || typeof value !== "object" || isCharacter(value) || isLorebook(value)) return false;
+    return Boolean(value.temperature !== void 0 || value.top_p !== void 0 || value.topP !== void 0 || value.prompts || value.parameters || /preset/i.test(String(value.name || "")));
+  }
+  function classifyResource(file) {
+    const path = String(file?.path || "").toLowerCase();
+    const extension = path.split(".").pop();
+    const parsed = extension === "json" ? jsonFromFile(file) : extension === "png" ? decodePngCharacter(file) : null;
+    if (parsed && isCharacter(parsed)) return { kind: "character", parsed, warnings: [] };
+    if (parsed && isLorebook(parsed)) return { kind: "lorebook", parsed, warnings: [] };
+    if (parsed && isPreset(parsed)) return { kind: "preset", parsed, warnings: [] };
+    if (extension === "json") return { kind: "unknown", parsed: null, warnings: ["\u65E0\u6CD5\u6839\u636E JSON \u7ED3\u6784\u8BC6\u522B\u8D44\u6E90\u7C7B\u578B"] };
+    if (extension === "png") return { kind: "unknown", parsed: null, warnings: ["PNG \u4E2D\u6CA1\u6709\u53EF\u8BC6\u522B\u7684 chara \u89D2\u8272\u5361\u6570\u636E"] };
+    return { kind: "unknown", parsed: null, warnings: ["\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u683C\u5F0F"] };
+  }
+
+  // src/github/import-service.js
+  function createImportService({ client, adapter }) {
+    return {
+      async importFile({ config, path, conflict = "new" }) {
+        if (conflict === "skip") return { path, skipped: true, reason: "conflict_policy" };
+        const file = await client.readFile(config, path);
+        const classification = classifyResource(file);
+        if (classification.kind === "unknown" || !classification.parsed) {
+          const error = new Error(classification.warnings.join("\uFF1B") || "Unsupported resource");
+          error.code = "unsupported_format";
+          throw error;
+        }
+        const requestId = `github:${path}:${conflict}`;
+        let resource;
+        if (classification.kind === "character") resource = await adapter.createCharacter(classification.parsed, requestId);
+        else if (classification.kind === "lorebook") resource = await adapter.createLorebook(classification.parsed, requestId);
+        else resource = await adapter.createPreset(classification.parsed, requestId);
+        return { path, kind: classification.kind, resource, conflict };
+      }
+    };
+  }
+
+  // src/wechat/identity-store.js
+  function createIdentityService({ storage, adapter }) {
+    return {
+      async listIdentities() {
+        const state = await storage.loadGlobal();
+        return state.identities || [];
+      },
+      async switchIdentity(identityId) {
+        const state = await storage.loadGlobal();
+        const identity = (state.identities || []).find((item) => item.id === identityId);
+        if (!identity) {
+          const error = new Error(`Unknown phone identity: ${identityId}`);
+          error.code = "identity_not_found";
+          throw error;
+        }
+        await storage.saveGlobal({ ...state, activeIdentityId: identityId });
+        return identity;
+      },
+      async ensureShadowPersona(identity) {
+        if (identity?.personaId) return identity.personaId;
+        if (!identity?.name) throw new Error("Identity name is required");
+        const persona = await adapter.createPersona({
+          name: `\u624B\u673A\u8EAB\u4EFD \xB7 ${identity.name}`,
+          description: identity.profile?.bio || `\u7531\u5C0F\u624B\u673A\u4E3A ${identity.name} \u521B\u5EFA\u7684\u8EAB\u4EFD\u3002`,
+          active: false
+        }, `identity:${identity.id}`);
+        const state = await storage.loadGlobal();
+        const identities = (state.identities || []).map((item) => item.id === identity.id ? { ...item, personaId: persona.id } : item);
+        await storage.saveGlobal({ ...state, identities });
+        return persona.id;
+      }
+    };
+  }
+
+  // src/wechat/thread-store.js
+  function threadKey({ identityId, kind, participantIds }) {
+    return `thread:${identityId}:${kind}:${[...participantIds || []].map(Number).sort((a, b) => a - b).join(",")}`;
+  }
+  function trimText(value, max) {
+    const text = String(value || "");
+    return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}\u2026` : text;
+  }
+  function createThreadService({ storage, now = () => Date.now() }) {
+    return {
+      async getOrCreateThread({ identityId, kind, participantIds, title = "" }) {
+        const state = await storage.loadGlobal();
+        const id = threadKey({ identityId, kind, participantIds });
+        const existing = state.threads?.[id];
+        if (existing) return existing;
+        const thread = {
+          id,
+          identityId,
+          kind,
+          participantIds: [...participantIds || []].map(Number).sort((a, b) => a - b),
+          title,
+          messages: [],
+          digest: "",
+          unread: 0,
+          lastContactAt: null
+        };
+        await storage.saveGlobal({ ...state, threads: { ...state.threads || {}, [id]: thread } });
+        return thread;
+      },
+      async getThread(threadId) {
+        const state = await storage.loadGlobal();
+        return state.threads?.[threadId] || null;
+      },
+      async listThreads(identityId) {
+        const state = await storage.loadGlobal();
+        return Object.values(state.threads || {}).filter((thread) => thread.identityId === identityId).sort((a, b) => String(b.lastContactAt || "").localeCompare(String(a.lastContactAt || "")));
+      },
+      async appendMessage(threadId, message) {
+        const state = await storage.loadGlobal();
+        const thread = state.threads?.[threadId];
+        if (!thread) throw new Error(`Unknown thread: ${threadId}`);
+        const nextMessage = {
+          id: message.id || `${threadId}:message:${thread.messages.length + 1}`,
+          authorId: message.authorId ?? null,
+          role: message.role || "user",
+          content: String(message.content || ""),
+          createdAt: message.createdAt || new Date(now()).toISOString()
+        };
+        const nextThread = {
+          ...thread,
+          messages: [...thread.messages, nextMessage],
+          lastContactAt: nextMessage.createdAt,
+          unread: message.unread === false ? thread.unread : thread.unread + (nextMessage.role === "character" ? 1 : 0)
+        };
+        await storage.saveGlobal({ ...state, threads: { ...state.threads, [threadId]: nextThread } });
+        return nextMessage;
+      },
+      async markRead(threadId) {
+        const state = await storage.loadGlobal();
+        if (!state.threads?.[threadId]) return null;
+        const nextThread = { ...state.threads[threadId], unread: 0 };
+        await storage.saveGlobal({ ...state, threads: { ...state.threads, [threadId]: nextThread } });
+        return nextThread;
+      },
+      async buildDigest(threadId, maxChars = 600) {
+        const thread = await this.getThread(threadId);
+        if (!thread) return "";
+        const digest = thread.messages.slice(-8).map((message) => `${message.role}: ${message.content}`).join("\n");
+        return trimText(digest, maxChars);
+      }
+    };
+  }
+
+  // src/wechat/moments-store.js
+  function createMomentsService({ storage, now = () => Date.now() }) {
+    return {
+      async createMoment(identityId, post) {
+        const state = await storage.loadGlobal();
+        const moment = {
+          id: `moment:${now()}:${(state.moments || []).length + 1}`,
+          identityId,
+          text: String(post?.text || "").trim(),
+          createdAt: new Date(now()).toISOString(),
+          source: post?.source || (identityId.startsWith("character:") ? "role" : "user"),
+          relatedChatId: post?.relatedChatId ?? null
+        };
+        if (!moment.text) throw new Error("Moment text is required");
+        await storage.saveGlobal({ ...state, moments: [...state.moments || [], moment] });
+        return moment;
+      },
+      async listFeed() {
+        const state = await storage.loadGlobal();
+        return [...state.moments || []].sort((a, b) => {
+          const byDate = String(b.createdAt).localeCompare(String(a.createdAt));
+          return byDate || String(b.id).localeCompare(String(a.id));
+        });
+      }
+    };
+  }
+
+  // src/runtime/role-dialogue.js
+  function clip(value, max) {
+    const text = String(value || "").trim();
+    return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
+  }
+  function createRoleDialogueService({ adapter, threadService }) {
+    return {
+      async generateExchange({ threadId, speakerId, speakerName, context, maxChars = 600 }) {
+        const prompt = [
+          `\u4F60\u6B63\u5728\u751F\u6210\u89D2\u8272\u201C${speakerName}\u201D\u5728\u89D2\u8272\u95F4\u804A\u5929\u4E2D\u7684\u4E0B\u4E00\u6761\u6D88\u606F\u3002`,
+          "\u53EA\u8F93\u51FA\u8FD9\u4E00\u6761\u6D88\u606F\uFF0C\u4E0D\u8981\u52A0\u65C1\u767D\u3001\u6807\u9898\u6216\u5176\u4ED6\u89D2\u8272\u7684\u53F0\u8BCD\u3002",
+          `\u5267\u60C5/\u804A\u5929\u4E0A\u4E0B\u6587\uFF1A${clip(context, 1800)}`
+        ].join("\n");
+        const generated = await adapter.oneOffGenerate(prompt, {
+          context: false,
+          settings: { maxCompletionTokens: 180 }
+        });
+        const content = clip(generated, maxChars);
+        if (!content) throw new Error("Role dialogue generation returned empty content");
+        const draft = {
+          authorId: speakerId,
+          role: "character",
+          content,
+          unread: true
+        };
+        return await threadService.appendMessage(threadId, draft) || draft;
+      }
+    };
+  }
+
+  // src/ui/phone-app.js
+  var APP_LABELS = [
+    { id: "characters", key: "apps.characters", fallback: "\u89D2\u8272\u7BA1\u7406", hint: "\u68C0\u6D4B\u5267\u60C5\u4E2D\u7684\u65B0\u89D2\u8272" },
+    { id: "import", key: "apps.import", fallback: "\u5185\u5BB9\u5BFC\u5165", hint: "\u4ECE GitHub \u5BFC\u5165\u8D44\u6E90" },
+    { id: "wechat", key: "apps.wechat", fallback: "\u5FAE\u4FE1", hint: "\u89D2\u8272\u804A\u5929\u4E0E\u670B\u53CB\u5708" }
+  ];
+  function el(tag, options = {}, children = []) {
+    const node = document.createElement(tag);
+    Object.entries(options).forEach(([key, value]) => {
+      if (key === "text") node.textContent = value;
+      else if (key === "className") node.className = value;
+      else if (key === "value") node.value = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
+      else if (value !== void 0 && value !== null) node.setAttribute(key, value);
+    });
+    children.forEach((child) => node.append(child));
+    return node;
+  }
+  function mergeState(input = {}) {
+    return {
+      ...JSON.parse(JSON.stringify(DEFAULT_PHONE_STATE)),
+      ...input,
+      identities: Array.isArray(input.identities) && input.identities.length ? input.identities : JSON.parse(JSON.stringify(DEFAULT_PHONE_STATE.identities)),
+      candidates: Array.isArray(input.candidates) ? input.candidates : [],
+      threads: input.threads && typeof input.threads === "object" ? input.threads : {},
+      moments: Array.isArray(input.moments) ? input.moments : [],
+      github: { ...DEFAULT_PHONE_STATE.github, ...input.github || {} },
+      detection: { ...DEFAULT_PHONE_STATE.detection, ...input.detection || {} }
+    };
+  }
+  function mountPhone(root, options = {}) {
+    let open = false;
+    let page = "home";
+    let wechatTab = "messages";
+    let activeThreadId = null;
+    let state = mergeState(options.state);
+    const tavoFacade = options.tavo || (typeof tavo !== "undefined" ? tavo : null);
+    const storage = options.storage || (tavoFacade ? createStorage(tavoFacade) : null);
+    const adapter = options.adapter || (tavoFacade ? createTavoAdapter(tavoFacade) : null);
+    const identityService = options.identityService || (storage && adapter ? createIdentityService({ storage, adapter }) : null);
+    const threadService = options.threadService || (storage ? createThreadService({ storage }) : null);
+    const momentsService = options.momentsService || (storage ? createMomentsService({ storage }) : null);
+    const importService = options.importService || (adapter ? createImportService({ client: new GitHubClient(), adapter }) : null);
+    const roleDialogue = adapter && threadService ? createRoleDialogueService({ adapter, threadService }) : null;
+    const localize = (key, fallback) => {
+      try {
+        return tavoFacade?.plugin?.i18n?.t?.(key) || fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const notify = async (message) => {
+      try {
+        await tavoFacade?.utils?.toast?.(message);
+      } catch {
+      }
+    };
+    const launcher = el("button", {
+      className: "phone-launcher",
+      "aria-label": localize("runtime.openPhone", "\u6253\u5F00\u5C0F\u624B\u673A"),
+      text: "\u2302",
+      onClick: () => {
+        open = true;
+        refresh().catch(() => {
+        });
+        render();
+      }
+    });
+    const shell = el("section", { className: "phone-shell", hidden: "" });
+    const topbar = el("header", { className: "phone-topbar" });
+    const identity = el("span", { className: "phone-identity" });
+    const title = el("h2", { className: "phone-title" });
+    const close = el("button", { className: "phone-close", "aria-label": localize("runtime.closePhone", "\u5173\u95ED\u5C0F\u624B\u673A"), text: "\xD7", onClick: () => {
+      open = false;
+      render();
+    } });
+    topbar.append(identity, title, close);
+    const content = el("main", { className: "phone-content" });
+    const nav = el("nav", { className: "phone-nav", "aria-label": "\u5FAE\u4FE1\u5BFC\u822A" });
+    shell.append(topbar, content, nav);
+    root.replaceChildren(launcher, shell);
+    async function refresh() {
+      if (!storage?.loadGlobal) return;
+      try {
+        state = mergeState(await storage.loadGlobal());
+      } catch (error) {
+        await notify(localize("runtime.error", "\u624B\u673A\u6570\u636E\u52A0\u8F7D\u5931\u8D25"));
+        throw error;
+      }
+    }
+    async function save() {
+      if (storage?.saveGlobal) await storage.saveGlobal(state);
+    }
+    function renderHome() {
+      title.textContent = "\u5C0F\u624B\u673A";
+      const grid = el("div", { className: "phone-home-grid" });
+      APP_LABELS.forEach((app) => grid.append(el("button", {
+        className: "phone-app-card",
+        "data-app": app.id,
+        onClick: () => {
+          page = app.id;
+          render();
+        }
+      }, [el("span", { text: localize(app.key, app.fallback) }), el("small", { text: app.hint })])));
+      content.replaceChildren(grid);
+      nav.replaceChildren();
+    }
+    function candidateCard(candidate) {
+      const card = el("article", { className: "phone-card", "data-candidate": candidate.id || candidate.name });
+      const name = el("input", { className: "candidate-name", value: candidate.name, "aria-label": "\u89D2\u8272\u540D\u79F0" });
+      const description = el("textarea", { className: "candidate-description", "aria-label": "\u89D2\u8272\u63CF\u8FF0" });
+      description.value = candidate.description || "";
+      const actions = el("div", { className: "phone-row" });
+      const confirm = el("button", { className: "phone-button primary", text: "\u786E\u8BA4\u521B\u5EFA", onClick: async () => {
+        if (!adapter?.createCharacter) return notify("Tavo \u89D2\u8272 API \u6682\u4E0D\u53EF\u7528");
+        confirm.disabled = true;
+        try {
+          const created = await adapter.createCharacter({ ...candidate, name: name.value.trim(), description: description.value.trim() }, candidate.id || `candidate:${Date.now()}`);
+          state.candidates = state.candidates.filter((item) => item.id !== candidate.id);
+          if (created?.id) state.identities.push({ id: `character:${created.id}`, kind: "character", characterId: created.id, name: created.name || name.value.trim(), profile: { bio: description.value.trim() }, settings: { proactiveEnabled: false, roleDialogueEnabled: false } });
+          await save();
+          render();
+        } catch (error) {
+          confirm.disabled = false;
+          await notify(error.message || "\u89D2\u8272\u521B\u5EFA\u5931\u8D25");
+        }
+      } });
+      const ignore = el("button", { className: "phone-button", text: "\u5FFD\u7565", onClick: async () => {
+        state.candidates = state.candidates.filter((item) => item.id !== candidate.id);
+        await save();
+        render();
+      } });
+      actions.append(confirm, ignore);
+      card.append(el("div", { className: "phone-field" }, [el("label", { text: "\u540D\u79F0" }), name]), el("div", { className: "phone-field" }, [el("label", { text: "\u63CF\u8FF0" }), description]), actions);
+      return card;
+    }
+    function renderCharacters() {
+      title.textContent = localize("apps.characters", "\u89D2\u8272\u7BA1\u7406");
+      const enabled = el("input", { type: "checkbox", checked: state.detection.enabled ? "checked" : void 0, "aria-label": "\u542F\u7528\u89D2\u8272\u68C0\u6D4B" });
+      const threshold = el("input", { type: "number", min: "1", max: "100", value: String(state.detection.roundThreshold), "aria-label": "\u68C0\u6D4B\u56DE\u5408\u9608\u503C" });
+      const saveSettings = el("button", { className: "phone-button primary", text: "\u4FDD\u5B58\u68C0\u6D4B\u8BBE\u7F6E", onClick: async () => {
+        state.detection = { ...state.detection, enabled: enabled.checked, roundThreshold: Math.max(1, Number(threshold.value) || 5) };
+        await save();
+        await notify("\u89D2\u8272\u68C0\u6D4B\u8BBE\u7F6E\u5DF2\u4FDD\u5B58");
+      } });
+      const candidates = state.candidates.length ? state.candidates.map(candidateCard) : [el("p", { className: "phone-muted", text: "\u8FD8\u6CA1\u6709\u5F85\u786E\u8BA4\u89D2\u8272" })];
+      content.replaceChildren(el("div", { className: "phone-section" }, [
+        el("div", { className: "phone-card" }, [el("div", { className: "phone-row" }, [el("strong", { text: "\u5BF9\u8BDD\u8F6E\u6570\u68C0\u6D4B" }), el("span", { className: "phone-pill", text: `${state.detection.roundThreshold} \u56DE\u5408` })]), el("label", { className: "phone-row", text: "\u542F\u7528\u68C0\u6D4B" }, [enabled]), el("div", { className: "phone-field" }, [el("label", { text: "\u6BCF\u51E0\u4E2A\u5B8C\u6574\u56DE\u5408\u68C0\u6D4B" }), threshold]), saveSettings]),
+        el("div", { className: "phone-section" }, [el("strong", { text: "\u5F85\u786E\u8BA4\u89D2\u8272" }), ...candidates])
+      ]));
+      nav.replaceChildren();
+    }
+    function renderImport() {
+      title.textContent = localize("apps.import", "\u5185\u5BB9\u5BFC\u5165");
+      const config = state.github;
+      const owner = el("input", { className: "github-owner", value: config.owner, placeholder: "owner" });
+      const repo = el("input", { className: "github-repo", value: config.repo, placeholder: "repo" });
+      const branch = el("input", { className: "github-branch", value: config.branch || "main", placeholder: "main" });
+      const rootPath = el("input", { className: "github-root", value: config.rootPath || "", placeholder: "\u53EF\u9009\u76EE\u5F55" });
+      const token = el("input", { className: "github-token", type: "password", value: config.token || "", placeholder: "\u53EF\u9009 token" });
+      const fileList = el("div", { className: "phone-section" });
+      const persistGithubConfig = async () => {
+        const nextConfig = { ...state.github, owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || "main", rootPath: rootPath.value.trim(), token: token.value };
+        state.github = nextConfig;
+        await save();
+        return nextConfig;
+      };
+      const saveConfig = el("button", { className: "phone-button", text: "\u4FDD\u5B58\u4ED3\u5E93\u914D\u7F6E", onClick: async () => {
+        await persistGithubConfig();
+        await notify("GitHub \u914D\u7F6E\u5DF2\u4FDD\u5B58");
+      } });
+      const browse = el("button", { className: "phone-button primary", text: "\u6D4B\u8BD5\u5E76\u6D4F\u89C8\u6587\u4EF6", onClick: async () => {
+        const currentConfig = await persistGithubConfig();
+        if (!importService) return notify("GitHub \u5BFC\u5165\u670D\u52A1\u6682\u4E0D\u53EF\u7528");
+        try {
+          const files = await importService.client.listFiles(currentConfig);
+          fileList.replaceChildren(...files.map((file) => el("div", { className: "phone-card phone-row" }, [el("span", { text: file.path }), el("button", { className: "phone-button", text: "\u5BFC\u5165", onClick: async () => {
+            try {
+              await importService.importFile({ config: state.github, path: file.path, conflict: "new" });
+              await notify("\u5BFC\u5165\u6210\u529F");
+            } catch (error) {
+              await notify(error.message || "\u5BFC\u5165\u5931\u8D25");
+            }
+          } })])));
+        } catch (error) {
+          await notify(error.message || "GitHub \u8FDE\u63A5\u5931\u8D25");
+        }
+      } });
+      content.replaceChildren(el("div", { className: "phone-section" }, [
+        el("div", { className: "phone-card phone-section" }, [el("strong", { text: "GitHub \u4ED3\u5E93" }), ...[
+          ["owner", owner, "Owner"],
+          ["repo", repo, "Repo"],
+          ["branch", branch, "Branch"],
+          ["root", rootPath, "\u76EE\u5F55"],
+          ["token", token, "Token"]
+        ].map(([, input, label]) => el("div", { className: "phone-field" }, [el("label", { text: label }), input])), el("div", { className: "phone-row" }, [saveConfig, browse])]),
+        fileList
+      ]));
+      nav.replaceChildren();
+    }
+    function renderMessages() {
+      title.textContent = "\u5FAE\u4FE1";
+      const threads = Object.values(state.threads || {}).filter((thread) => thread.identityId === state.activeIdentityId);
+      const list = threads.length ? threads.map((thread) => el("button", { className: "phone-app-card", onClick: () => {
+        activeThreadId = thread.id;
+        page = "thread";
+        render();
+      } }, [el("span", { text: thread.title || thread.participantIds.join("\u3001") || "\u672A\u547D\u540D\u4F1A\u8BDD" }), el("small", { text: thread.unread ? `${thread.unread} \u6761\u672A\u8BFB` : "\u5DF2\u8BFB" })])) : [el("p", { className: "phone-muted", text: "\u6682\u65E0\u4F1A\u8BDD\uFF0C\u53EF\u4ECE\u901A\u8BAF\u5F55\u53D1\u8D77\u804A\u5929\u3002" })];
+      content.replaceChildren(el("div", { className: "phone-section" }, [el("div", { className: "phone-card" }, [el("strong", { text: "\u4F1A\u8BDD" }), ...list])]));
+    }
+    function renderContacts() {
+      const contacts = state.identities.filter((item) => item.id !== state.activeIdentityId && item.kind === "character");
+      const list = contacts.length ? contacts.map((contact) => el("button", { className: "phone-app-card", onClick: async () => {
+        const thread = await threadService?.getOrCreateThread({ identityId: state.activeIdentityId, kind: "user-character", participantIds: [contact.characterId], title: contact.name });
+        state = mergeState(await storage?.loadGlobal?.() || state);
+        activeThreadId = thread.id;
+        page = "thread";
+        render();
+      } }, [el("span", { text: contact.name }), el("small", { text: contact.settings?.proactiveEnabled ? "\u4E3B\u52A8\u804A\u5929\u5DF2\u5F00" : "\u4E3B\u52A8\u804A\u5929\u672A\u5F00" })])) : [el("p", { className: "phone-muted", text: "\u8FD8\u6CA1\u6709\u89D2\u8272\u8054\u7CFB\u4EBA\u3002" })];
+      content.replaceChildren(el("div", { className: "phone-section" }, [el("div", { className: "phone-card" }, [el("strong", { text: "\u89D2\u8272\u8054\u7CFB\u4EBA" }), ...list])]));
+    }
+    function renderDiscover() {
+      const moments = [...state.moments || []].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      const composer = el("textarea", { placeholder: "\u53D1\u4E00\u6761\u670B\u53CB\u5708\u2026", "aria-label": "\u670B\u53CB\u5708\u5185\u5BB9" });
+      const publish = el("button", { className: "phone-button primary", text: "\u53D1\u5E03", onClick: async () => {
+        if (!momentsService || !composer.value.trim()) return;
+        await momentsService.createMoment(state.activeIdentityId, { text: composer.value });
+        state = mergeState(await storage.loadGlobal());
+        render();
+      } });
+      const feed = moments.length ? moments.map((moment) => el("article", {}, [el("strong", { text: state.identities.find((item) => item.id === moment.identityId)?.name || moment.identityId }), el("p", { text: moment.text }), el("small", { className: "phone-muted", text: moment.createdAt })])) : [el("p", { className: "phone-muted", text: "\u8FD8\u6CA1\u6709\u670B\u53CB\u5708\u52A8\u6001\u3002" })];
+      content.replaceChildren(el("div", { className: "phone-section" }, [el("div", { className: "phone-card phone-section" }, [composer, publish]), el("div", { className: "phone-card phone-feed" }, feed)]));
+    }
+    function renderMe() {
+      const select = el("select", { "aria-label": "\u5F53\u524D\u624B\u673A\u8EAB\u4EFD" });
+      state.identities.forEach((item) => select.append(el("option", { value: item.id, text: item.name, selected: item.id === state.activeIdentityId ? "selected" : void 0 })));
+      select.addEventListener("change", async () => {
+        if (identityService) await identityService.switchIdentity(select.value);
+        state = mergeState(await storage?.loadGlobal?.() || { ...state, activeIdentityId: select.value });
+        render();
+      });
+      const current = state.identities.find((item) => item.id === state.activeIdentityId) || state.identities[0];
+      const proactive = el("input", { type: "checkbox", checked: current?.settings?.proactiveEnabled ? "checked" : void 0, "aria-label": "\u5141\u8BB8\u4E3B\u52A8\u804A\u5929" });
+      proactive.addEventListener("change", async () => {
+        state.identities = state.identities.map((item) => item.id === current.id ? { ...item, settings: { ...item.settings || {}, proactiveEnabled: proactive.checked } } : item);
+        await save();
+      });
+      const roleDialogue2 = el("input", { type: "checkbox", checked: current?.settings?.roleDialogueEnabled ? "checked" : void 0, "aria-label": "\u5141\u8BB8\u89D2\u8272\u95F4\u540E\u53F0\u804A\u5929" });
+      roleDialogue2.addEventListener("change", async () => {
+        state.identities = state.identities.map((item) => item.id === current.id ? { ...item, settings: { ...item.settings || {}, roleDialogueEnabled: roleDialogue2.checked } } : item);
+        await save();
+      });
+      content.replaceChildren(el("div", { className: "phone-section" }, [el("div", { className: "phone-card phone-section" }, [el("strong", { text: "\u5F53\u524D\u624B\u673A\u8EAB\u4EFD" }), select, el("label", { className: "phone-row", text: "\u5141\u8BB8\u89D2\u8272\u4E3B\u52A8\u804A\u5929" }, [proactive]), el("label", { className: "phone-row", text: "\u5141\u8BB8\u89D2\u8272\u95F4\u540E\u53F0\u804A\u5929" }, [roleDialogue2])]), el("div", { className: "phone-card" }, [el("p", { className: "phone-muted", text: `\u8EAB\u4EFD\u7A7A\u95F4\uFF1A${current?.name || "\u7528\u6237"}` })])]));
+    }
+    function renderThread() {
+      const thread = state.threads?.[activeThreadId];
+      if (!thread) {
+        page = "wechat";
+        render();
+        return;
+      }
+      title.textContent = thread.title || "\u5FAE\u4FE1\u804A\u5929";
+      const messages = thread.messages.map((message) => el("div", { className: "phone-card" }, [el("small", { className: "phone-muted", text: message.role === "character" ? "\u89D2\u8272" : "\u6211" }), el("p", { text: message.content })]));
+      const input = el("textarea", { placeholder: "\u8F93\u5165\u6D88\u606F\u2026", "aria-label": "\u5FAE\u4FE1\u6D88\u606F" });
+      const send = el("button", { className: "phone-button primary", text: "\u53D1\u9001", onClick: async () => {
+        if (!input.value.trim() || !threadService) return;
+        const text = input.value.trim();
+        input.value = "";
+        await threadService.appendMessage(thread.id, { authorId: state.activeIdentityId, role: "user", content: text });
+        const contact = state.identities.find((item) => item.characterId && thread.participantIds.includes(item.characterId));
+        if (roleDialogue && contact) await roleDialogue.generateExchange({ threadId: thread.id, speakerId: contact.characterId, speakerName: contact.name, context: text });
+        state = mergeState(await storage.loadGlobal());
+        render();
+      } });
+      content.replaceChildren(el("div", { className: "phone-section" }, [...messages, el("div", { className: "phone-card phone-section" }, [input, send])]));
+      nav.replaceChildren(el("button", { text: "\u2039 \u8FD4\u56DE", onClick: () => {
+        page = "wechat";
+        render();
+      } }));
+    }
+    function renderNav(current = wechatTab) {
+      nav.replaceChildren(...[
+        ["messages", "\u5FAE\u4FE1"],
+        ["contacts", "\u901A\u8BAF\u5F55"],
+        ["discover", "\u53D1\u73B0"],
+        ["me", "\u6211\u7684"]
+      ].map(([id, label]) => el("button", { "aria-current": current === id ? "page" : "false", text: label, onClick: () => {
+        page = "wechat";
+        wechatTab = id;
+        render();
+      } })));
+    }
+    function renderWechat() {
+      title.textContent = "\u5FAE\u4FE1";
+      if (wechatTab === "contacts") renderContacts();
+      else if (wechatTab === "discover") renderDiscover();
+      else if (wechatTab === "me") renderMe();
+      else renderMessages();
+      renderNav();
+    }
+    function render() {
+      launcher.hidden = open;
+      shell.hidden = !open;
+      const current = state.identities.find((item) => item.id === state.activeIdentityId);
+      identity.textContent = `\u8EAB\u4EFD \xB7 ${current?.name || "\u7528\u6237"}`;
+      if (!open) return;
+      if (page === "characters") renderCharacters();
+      else if (page === "import") renderImport();
+      else if (page === "wechat") renderWechat();
+      else if (page === "thread") renderThread();
+      else renderHome();
+    }
+    render();
+    return { render, refresh, dispose: () => root.replaceChildren() };
+  }
+  if (typeof document !== "undefined") {
+    const root = document.querySelector("[data-shiyu-phone]");
+    if (root) mountPhone(root);
+  }
+})();
+
+</script>

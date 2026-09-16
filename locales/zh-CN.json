@@ -1,0 +1,22 @@
+{
+  "plugin.name": "小手机",
+  "plugin.description": "一个面向 Tavo 对话的身份感知手机空间，用于管理剧情中新出现的角色、从 GitHub 导入共享资源，并通过微信式空间联动角色扮演对话。",
+  "releaseNotes.0_1_0": "首个 MVP：包含手机壳、角色检测、GitHub 导入、身份空间和微信式聊天。",
+  "runtime.openPhone": "打开小手机",
+  "runtime.closePhone": "关闭小手机",
+  "runtime.loading": "正在加载手机数据…",
+  "runtime.error": "手机数据加载失败",
+  "apps.characters": "角色管理",
+  "apps.import": "内容导入",
+  "apps.wechat": "微信",
+  "wechat.messages": "微信",
+  "wechat.contacts": "通讯录",
+  "wechat.discover": "发现",
+  "wechat.me": "我的",
+  "common.back": "返回",
+  "common.save": "保存",
+  "common.cancel": "取消",
+  "common.confirm": "确认",
+  "common.retry": "重试",
+  "common.empty": "这里还没有内容"
+}

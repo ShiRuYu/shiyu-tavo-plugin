@@ -1,0 +1,22 @@
+{
+  "plugin.name": "Pocket Phone",
+  "plugin.description": "A compact, identity-aware phone workspace for Tavo chats. Manage emerging characters, import shared resources from GitHub, and keep roleplay conversations connected through a focused WeChat-like space.",
+  "releaseNotes.0_1_0": "Initial MVP with the phone shell, character detection, GitHub import, identity spaces, and WeChat-style conversations.",
+  "runtime.openPhone": "Open Pocket Phone",
+  "runtime.closePhone": "Close Pocket Phone",
+  "runtime.loading": "Loading phone data…",
+  "runtime.error": "Phone data could not be loaded",
+  "apps.characters": "Character Manager",
+  "apps.import": "Content Import",
+  "apps.wechat": "WeChat",
+  "wechat.messages": "WeChat",
+  "wechat.contacts": "Contacts",
+  "wechat.discover": "Discover",
+  "wechat.me": "Me",
+  "common.back": "Back",
+  "common.save": "Save",
+  "common.cancel": "Cancel",
+  "common.confirm": "Confirm",
+  "common.retry": "Retry",
+  "common.empty": "Nothing here yet"
+}

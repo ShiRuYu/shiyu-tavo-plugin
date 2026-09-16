@@ -1,0 +1,23 @@
+{
+  "specVersion": 2,
+  "id": "com.shiyu.phone",
+  "name": { "$t": "plugin.name" },
+  "author": "ShiRuYu",
+  "version": "0.1.0",
+  "entry": "entry.js",
+  "description": { "$t": "plugin.description" },
+  "releaseNotes": { "$t": "releaseNotes.0_1_0" },
+  "localization": {
+    "defaultLocale": "zh-CN",
+    "resources": {
+      "en": "locales/en.json",
+      "zh-CN": "locales/zh-CN.json"
+    }
+  },
+  "permissions": ["generate", "message", "variable", "file", "network"],
+  "contributes": {
+    "htmlFragments": [
+      { "id": "phone", "src": "ui/phone.html", "mount": "/chat/body/end" }
+    ]
+  }
+}
