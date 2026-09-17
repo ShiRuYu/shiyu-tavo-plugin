@@ -25,7 +25,9 @@ function supportedPath(path) {
 function sourceKey(config, path) {
   const source = parseRepositorySource(config?.repository || [config?.owner, config?.repo].filter(Boolean).join('/'), config?.branch || 'main');
   const branch = config?.branch || source.branch;
-  const basePath = source.path && !config?.rootPath ? `${source.path}/${normalizePath(path)}` : normalizePath(path);
+  const normalizedPath = normalizePath(path);
+  const alreadyScoped = source.path && (normalizedPath === source.path || normalizedPath.startsWith(`${source.path}/`));
+  const basePath = source.path && !config?.rootPath && !alreadyScoped ? `${source.path}/${normalizedPath}` : normalizedPath;
   return `${source.owner}/${source.repo}@${branch}:${normalizePath(basePath)}`;
 }
 
@@ -115,8 +117,14 @@ export function createImportService({ client, adapter, storage, limits = IMPORT_
     return adapter[method](payload, requestId);
   }
 
-  async function updateResource(candidate, payload) {
+  async function updateResource(candidate) {
     if (!adapter?.updateResource) throw new Error('重复资源暂不支持更新');
+    const existing = adapter.getResource ? await adapter.getResource(candidate.kind, candidate.duplicate.existingId) : null;
+    if (adapter.getResource && !existing) throw new Error('重复资源已不存在');
+    const normalized = candidate.normalized || candidate.parsed;
+    const payload = existing && normalized?.data && typeof normalized.data === 'object'
+      ? { ...existing, ...normalized.data }
+      : existing ? { ...existing, ...normalized } : normalized;
     return adapter.updateResource(candidate.kind, payload, candidate.duplicate.existingId);
   }
 
@@ -150,7 +158,7 @@ export function createImportService({ client, adapter, storage, limits = IMPORT_
         }
         const payload = candidatePayload(candidate, decision === 'create' ? choice.newName : '');
         const result = decision === 'update'
-          ? await updateResource(candidate, payload)
+          ? await updateResource(candidate)
           : await createResource(candidate, payload, `github:${candidate.path}:${choice.requestConflict || decision}`);
         if (result === null) {
           results.push({ status: 'cancelled', candidate });

@@ -540,7 +540,9 @@
   function sourceKey(config, path) {
     const source = parseRepositorySource(config?.repository || [config?.owner, config?.repo].filter(Boolean).join("/"), config?.branch || "main");
     const branch = config?.branch || source.branch;
-    const basePath = source.path && !config?.rootPath ? `${source.path}/${normalizePath(path)}` : normalizePath(path);
+    const normalizedPath = normalizePath(path);
+    const alreadyScoped = source.path && (normalizedPath === source.path || normalizedPath.startsWith(`${source.path}/`));
+    const basePath = source.path && !config?.rootPath && !alreadyScoped ? `${source.path}/${normalizedPath}` : normalizedPath;
     return `${source.owner}/${source.repo}@${branch}:${normalizePath(basePath)}`;
   }
   function candidatePayload(candidate, name = "") {
@@ -622,8 +624,12 @@
       if (!method || typeof adapter?.[method] !== "function") throw new Error(`Tavo ${candidate.kind} import API is unavailable`);
       return adapter[method](payload, requestId);
     }
-    async function updateResource(candidate, payload) {
+    async function updateResource(candidate) {
       if (!adapter?.updateResource) throw new Error("\u91CD\u590D\u8D44\u6E90\u6682\u4E0D\u652F\u6301\u66F4\u65B0");
+      const existing = adapter.getResource ? await adapter.getResource(candidate.kind, candidate.duplicate.existingId) : null;
+      if (adapter.getResource && !existing) throw new Error("\u91CD\u590D\u8D44\u6E90\u5DF2\u4E0D\u5B58\u5728");
+      const normalized = candidate.normalized || candidate.parsed;
+      const payload = existing && normalized?.data && typeof normalized.data === "object" ? { ...existing, ...normalized.data } : existing ? { ...existing, ...normalized } : normalized;
       return adapter.updateResource(candidate.kind, payload, candidate.duplicate.existingId);
     }
     async function prepareFiles({ config, entries = [] }) {
@@ -654,7 +660,7 @@
             continue;
           }
           const payload = candidatePayload(candidate, decision === "create" ? choice.newName : "");
-          const result = decision === "update" ? await updateResource(candidate, payload) : await createResource(candidate, payload, `github:${candidate.path}:${choice.requestConflict || decision}`);
+          const result = decision === "update" ? await updateResource(candidate) : await createResource(candidate, payload, `github:${candidate.path}:${choice.requestConflict || decision}`);
           if (result === null) {
             results.push({ status: "cancelled", candidate });
             continue;
