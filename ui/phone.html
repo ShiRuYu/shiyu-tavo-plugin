@@ -62,8 +62,9 @@
 .phone-home-grid { display:grid; grid-template-columns:1fr; gap:12px; padding-top:16px; }
 .phone-app-card { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--phone-line); border-radius:18px; padding:16px; background:var(--phone-panel); color:var(--phone-text); text-align:left; cursor:pointer; }
 .phone-app-card small { color: var(--phone-muted); }
-.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; flex:0 0 auto; min-height:58px; box-sizing:border-box; padding:10px 12px max(12px, var(--tavo-inset-bottom-input, 0px)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
-.phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:8px 2px; font-size:11px; cursor:pointer; }
+.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; flex:0 0 auto; min-height:52px; box-sizing:border-box; padding:6px 10px max(6px, env(safe-area-inset-bottom)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
+.phone-nav[hidden] { display:none; }
+.phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:5px 2px; font-size:11px; cursor:pointer; }
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }
 .phone-card { border:1px solid var(--phone-line); border-radius:16px; background:var(--phone-panel); padding:14px; }
@@ -1208,6 +1209,10 @@ ${transcript}`
       suppressLauncherClick = true;
     } }));
     dragCleanups.push(enableDragging(shell, topbar));
+    const setNavVisible = (visible) => {
+      nav.hidden = !visible;
+      if (!visible) nav.replaceChildren();
+    };
     async function refresh() {
       if (!storage?.loadGlobal) return;
       try {
@@ -1247,7 +1252,7 @@ ${transcript}`
         }
       }, [el("span", { text: localize(app.key, app.fallback) }), el("small", { text: app.hint })])));
       content.replaceChildren(grid);
-      nav.replaceChildren();
+      setNavVisible(false);
     }
     function candidateCard(candidate) {
       const card = el("article", { className: "phone-card", "data-candidate": candidate.id || candidate.name });
@@ -1324,7 +1329,7 @@ ${transcript}`
         el("div", { className: "phone-card phone-section" }, [el("strong", { text: "\u7ACB\u5373\u68C0\u6D4B\u6216\u751F\u6210" }), manualDetect, el("div", { className: "phone-field" }, [el("label", { text: "\u6839\u636E\u63CF\u8FF0\u751F\u6210\u89D2\u8272" }), rolePrompt]), generateRole]),
         el("div", { className: "phone-section" }, [el("strong", { text: "\u5F85\u786E\u8BA4\u89D2\u8272" }), ...candidates])
       ]));
-      nav.replaceChildren();
+      setNavVisible(false);
     }
     function renderImport() {
       title.textContent = localize("apps.import", "\u5185\u5BB9\u5BFC\u5165");
@@ -1496,7 +1501,7 @@ ${transcript}`
         preview
       ]));
       renderDirectory();
-      nav.replaceChildren();
+      setNavVisible(false);
     }
     function renderMessages() {
       title.textContent = "\u5FAE\u4FE1";
@@ -1595,12 +1600,14 @@ ${transcript}`
         render();
       } });
       content.replaceChildren(el("div", { className: "phone-section" }, [...messages, el("div", { className: "phone-card phone-section" }, [input, send])]));
+      setNavVisible(true);
       nav.replaceChildren(el("button", { text: "\u2039 \u8FD4\u56DE", onClick: () => {
         page = "wechat";
         render();
       } }));
     }
     function renderNav(current = wechatTab) {
+      setNavVisible(true);
       nav.replaceChildren(...[
         ["messages", "\u5FAE\u4FE1"],
         ["contacts", "\u901A\u8BAF\u5F55"],

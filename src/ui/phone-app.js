@@ -140,6 +140,7 @@ export function mountPhone(root, options = {}) {
   root.replaceChildren(launcher, shell);
   dragCleanups.push(enableDragging(launcher, launcher, { onDragged: () => { suppressLauncherClick = true; } }));
   dragCleanups.push(enableDragging(shell, topbar));
+  const setNavVisible = (visible) => { nav.hidden = !visible; if (!visible) nav.replaceChildren(); };
 
   async function refresh() {
     if (!storage?.loadGlobal) return;
@@ -175,7 +176,7 @@ export function mountPhone(root, options = {}) {
       onClick: () => { page = app.id; render(); },
     }, [el('span', { text: localize(app.key, app.fallback) }), el('small', { text: app.hint })])));
     content.replaceChildren(grid);
-    nav.replaceChildren();
+    setNavVisible(false);
   }
 
   function candidateCard(candidate) {
@@ -237,7 +238,7 @@ export function mountPhone(root, options = {}) {
       el('div', { className: 'phone-card phone-section' }, [el('strong', { text: '立即检测或生成' }), manualDetect, el('div', { className: 'phone-field' }, [el('label', { text: '根据描述生成角色' }), rolePrompt]), generateRole]),
       el('div', { className: 'phone-section' }, [el('strong', { text: '待确认角色' }), ...candidates]),
     ]));
-    nav.replaceChildren();
+    setNavVisible(false);
   }
 
   function renderImport() {
@@ -387,7 +388,7 @@ export function mountPhone(root, options = {}) {
       preview,
     ]));
     renderDirectory();
-    nav.replaceChildren();
+    setNavVisible(false);
   }
 
   function renderMessages() {
@@ -454,10 +455,12 @@ export function mountPhone(root, options = {}) {
       state = mergeState(await storage.loadGlobal()); render();
     } });
     content.replaceChildren(el('div', { className: 'phone-section' }, [...messages, el('div', { className: 'phone-card phone-section' }, [input, send])]));
+    setNavVisible(true);
     nav.replaceChildren(el('button', { text: '‹ 返回', onClick: () => { page = 'wechat'; render(); } }));
   }
 
   function renderNav(current = wechatTab) {
+    setNavVisible(true);
     nav.replaceChildren(...[
       ['messages', '微信'], ['contacts', '通讯录'], ['discover', '发现'], ['me', '我的'],
     ].map(([id, label]) => el('button', { 'aria-current': current === id ? 'page' : 'false', text: label, onClick: () => { page = 'wechat'; wechatTab = id; render(); } })));

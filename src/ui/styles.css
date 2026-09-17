@@ -60,8 +60,9 @@
 .phone-home-grid { display:grid; grid-template-columns:1fr; gap:12px; padding-top:16px; }
 .phone-app-card { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--phone-line); border-radius:18px; padding:16px; background:var(--phone-panel); color:var(--phone-text); text-align:left; cursor:pointer; }
 .phone-app-card small { color: var(--phone-muted); }
-.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; flex:0 0 auto; min-height:58px; box-sizing:border-box; padding:10px 12px max(12px, var(--tavo-inset-bottom-input, 0px)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
-.phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:8px 2px; font-size:11px; cursor:pointer; }
+.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; flex:0 0 auto; min-height:52px; box-sizing:border-box; padding:6px 10px max(6px, env(safe-area-inset-bottom)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
+.phone-nav[hidden] { display:none; }
+.phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:5px 2px; font-size:11px; cursor:pointer; }
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }
 .phone-card { border:1px solid var(--phone-line); border-radius:16px; background:var(--phone-panel); padding:14px; }
