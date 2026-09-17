@@ -1,7 +1,7 @@
 import { countCompletedRounds, recentRoundMessages } from '../detection/round-counter.js';
 import { detectNewRoles as defaultDetectNewRoles } from '../detection/role-detector.js';
 import { prepareMainChatText } from './main-chat-link.js';
-import { shouldProactivelyMessage } from './proactive.js';
+import { runSocialBackground } from './social-scanner.js';
 
 export const RUNTIME_EVENTS = [
   'chat:opened',
@@ -71,34 +71,7 @@ export function createRuntimeCoordinator({ tavo, adapter, storage, detectionServ
   async function runBackground(event = {}) {
     if (!storage?.loadGlobal || !threadService || !roleDialogueService) return { proactive: 0, roleDialogue: 0 };
     const state = await storage.loadGlobal();
-    const current = (state.identities || []).find((identity) => identity.id === state.activeIdentityId);
-    if (!current) return { proactive: 0, roleDialogue: 0 };
-    const contacts = (state.identities || []).filter((identity) => identity.kind === 'character' && identity.id !== current.id && identity.characterId);
-    const eventAt = event.at || new Date().toISOString();
-    let proactive = 0;
-    if (current.settings?.proactiveEnabled) {
-      for (const contact of contacts) {
-        const existingThread = Object.values(state.threads || {}).find((thread) => thread.identityId === current.id && thread.kind === 'user-character' && thread.participantIds.includes(contact.characterId));
-        const decision = shouldProactivelyMessage({
-          contact: { id: contact.characterId, lastContactAt: existingThread?.lastContactAt },
-          event: { ...event, at: eventAt, presentCharacterIds: event.presentCharacterIds || [] },
-          settings: { enabled: contact.settings?.proactiveEnabled !== false, probability: current.settings.proactiveProbability ?? 1, cooldownMinutes: current.settings.proactiveCooldownMinutes ?? 30, absentAfterHours: current.settings.proactiveAbsentAfterHours ?? 24 },
-        });
-        if (!decision.allowed) continue;
-        const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: 'user-character', participantIds: [contact.characterId], title: contact.name });
-        await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: contact.characterId, speakerName: contact.name, context: event.text || '' });
-        proactive += 1;
-        break;
-      }
-    }
-    let roleDialogue = 0;
-    if (current.settings?.roleDialogueEnabled && contacts.length >= 2) {
-      const [first, second] = contacts;
-      const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: 'character-character', participantIds: [first.characterId, second.characterId], title: `${first.name} 与 ${second.name}` });
-      await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: first.characterId, speakerName: first.name, context: event.text || '' });
-      roleDialogue = 1;
-    }
-    return { proactive, roleDialogue };
+    return runSocialBackground({ state, event, threadService, roleDialogueService });
   }
 
   function enqueueBackgroundWork(key, task) {

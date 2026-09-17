@@ -68,6 +68,7 @@
     threads: {},
     moments: [],
     github: { repository: "", branch: "main", token: "" },
+    wechat: { autoScanEnabled: true },
     detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 }
   };
   function clone(value) {
@@ -86,6 +87,7 @@
         ...input.github || {},
         repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join("/")
       },
+      wechat: { ...clone(DEFAULT_PHONE_STATE.wechat), ...input.wechat || {} },
       detection: { ...clone(DEFAULT_PHONE_STATE.detection), ...input.detection || {} }
     };
   }
@@ -270,6 +272,41 @@ ${bounded}
     return { allowed: true, reason: "eligible" };
   }
 
+  // src/runtime/social-scanner.js
+  async function runSocialBackground({ state, event = {}, threadService, roleDialogueService, force = false }) {
+    if (!state || !threadService || !roleDialogueService) return { proactive: 0, roleDialogue: 0 };
+    if (!force && state.wechat?.autoScanEnabled === false) return { proactive: 0, roleDialogue: 0 };
+    const current = (state.identities || []).find((identity) => identity.id === state.activeIdentityId);
+    if (!current) return { proactive: 0, roleDialogue: 0 };
+    const contacts = (state.identities || []).filter((identity) => identity.kind === "character" && identity.id !== current.id && identity.characterId);
+    const eventAt = event.at || (/* @__PURE__ */ new Date()).toISOString();
+    const presentCharacterIds = event.presentCharacterIds || [];
+    let proactive = 0;
+    if (current.settings?.proactiveEnabled) {
+      for (const contact of contacts) {
+        const existingThread = Object.values(state.threads || {}).find((thread2) => thread2.identityId === current.id && thread2.kind === "user-character" && thread2.participantIds.includes(contact.characterId));
+        const decision = shouldProactivelyMessage({
+          contact: { id: contact.characterId, lastContactAt: existingThread?.lastContactAt },
+          event: { ...event, at: eventAt, presentCharacterIds },
+          settings: { enabled: contact.settings?.proactiveEnabled !== false, probability: current.settings.proactiveProbability ?? 1, cooldownMinutes: current.settings.proactiveCooldownMinutes ?? 30, absentAfterHours: current.settings.proactiveAbsentAfterHours ?? 24 }
+        });
+        if (!decision.allowed) continue;
+        const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "user-character", participantIds: [contact.characterId], title: contact.name });
+        await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: contact.characterId, speakerName: contact.name, context: event.text || "" });
+        proactive += 1;
+        break;
+      }
+    }
+    let roleDialogue = 0;
+    if (current.settings?.roleDialogueEnabled && contacts.length >= 2) {
+      const [first, second] = contacts;
+      const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "character-character", participantIds: [first.characterId, second.characterId], title: `${first.name} \u4E0E ${second.name}` });
+      await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: first.characterId, speakerName: first.name, context: event.text || "" });
+      roleDialogue = 1;
+    }
+    return { proactive, roleDialogue };
+  }
+
   // src/runtime/coordinator.js
   var RUNTIME_EVENTS = [
     "chat:opened",
@@ -336,34 +373,7 @@ ${bounded}
     async function runBackground(event = {}) {
       if (!storage?.loadGlobal || !threadService || !roleDialogueService) return { proactive: 0, roleDialogue: 0 };
       const state = await storage.loadGlobal();
-      const current = (state.identities || []).find((identity) => identity.id === state.activeIdentityId);
-      if (!current) return { proactive: 0, roleDialogue: 0 };
-      const contacts = (state.identities || []).filter((identity) => identity.kind === "character" && identity.id !== current.id && identity.characterId);
-      const eventAt = event.at || (/* @__PURE__ */ new Date()).toISOString();
-      let proactive = 0;
-      if (current.settings?.proactiveEnabled) {
-        for (const contact of contacts) {
-          const existingThread = Object.values(state.threads || {}).find((thread2) => thread2.identityId === current.id && thread2.kind === "user-character" && thread2.participantIds.includes(contact.characterId));
-          const decision = shouldProactivelyMessage({
-            contact: { id: contact.characterId, lastContactAt: existingThread?.lastContactAt },
-            event: { ...event, at: eventAt, presentCharacterIds: event.presentCharacterIds || [] },
-            settings: { enabled: contact.settings?.proactiveEnabled !== false, probability: current.settings.proactiveProbability ?? 1, cooldownMinutes: current.settings.proactiveCooldownMinutes ?? 30, absentAfterHours: current.settings.proactiveAbsentAfterHours ?? 24 }
-          });
-          if (!decision.allowed) continue;
-          const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "user-character", participantIds: [contact.characterId], title: contact.name });
-          await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: contact.characterId, speakerName: contact.name, context: event.text || "" });
-          proactive += 1;
-          break;
-        }
-      }
-      let roleDialogue = 0;
-      if (current.settings?.roleDialogueEnabled && contacts.length >= 2) {
-        const [first, second] = contacts;
-        const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "character-character", participantIds: [first.characterId, second.characterId], title: `${first.name} \u4E0E ${second.name}` });
-        await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: first.characterId, speakerName: first.name, context: event.text || "" });
-        roleDialogue = 1;
-      }
-      return { proactive, roleDialogue };
+      return runSocialBackground({ state, event, threadService, roleDialogueService });
     }
     function enqueueBackgroundWork(key, task) {
       if (!key || typeof task !== "function") return Promise.resolve();

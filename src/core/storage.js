@@ -15,6 +15,7 @@ export const DEFAULT_PHONE_STATE = {
   threads: {},
   moments: [],
   github: { repository: '', branch: 'main', token: '' },
+  wechat: { autoScanEnabled: true },
   detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 },
 };
 
@@ -37,6 +38,7 @@ function mergeDefaults(value) {
       ...(input.github || {}),
       repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join('/'),
     },
+    wechat: { ...clone(DEFAULT_PHONE_STATE.wechat), ...(input.wechat || {}) },
     detection: { ...clone(DEFAULT_PHONE_STATE.detection), ...(input.detection || {}) },
   };
 }

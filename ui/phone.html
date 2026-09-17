@@ -31,6 +31,7 @@
   color: var(--phone-teal);
   box-shadow: 0 12px 32px #0008;
   cursor: grab;
+  touch-action: none;
 }
 
 .phone-shell {
@@ -39,7 +40,11 @@
   top: calc(var(--tavo-inset-top-bar, 0px) + 14px);
   bottom: calc(var(--tavo-inset-bottom-input, 0px) + 14px);
   width: min(390px, calc(100vw - 28px));
-  min-height: 500px;
+  min-height: min(420px, calc(100vh - var(--tavo-inset-top-bar, 0px) - var(--tavo-inset-bottom-input, 0px) - 28px));
+  max-height: calc(100vh - var(--tavo-inset-top-bar, 0px) - var(--tavo-inset-bottom-input, 0px) - 28px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   overflow: hidden;
   border: 1px solid #ffffff18;
   border-radius: 28px;
@@ -48,16 +53,16 @@
 }
 
 .phone-shell[hidden], .phone-launcher[hidden] { display: none; }
-.phone-topbar { display:flex; align-items:center; justify-content:space-between; padding: 18px 18px 12px; }
+.phone-topbar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex:0 0 auto; padding: 18px 18px 12px; touch-action:none; cursor:grab; }
 .phone-identity { color: var(--phone-teal); font-size: 12px; }
 .phone-title { margin: 0; font-size: 20px; }
 .phone-home-button, .phone-close, .phone-back { border: 0; background: transparent; color: var(--phone-muted); cursor: pointer; }
 .phone-home-button { font-size: 20px; line-height: 1; padding: 2px 6px; }
-.phone-content { height: calc(100% - 110px); overflow-y: auto; padding: 0 16px 18px; }
+.phone-content { flex:1 1 auto; min-height:0; height:auto; overflow-y:auto; box-sizing:border-box; padding: 0 16px 18px; }
 .phone-home-grid { display:grid; grid-template-columns:1fr; gap:12px; padding-top:16px; }
 .phone-app-card { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--phone-line); border-radius:18px; padding:16px; background:var(--phone-panel); color:var(--phone-text); text-align:left; cursor:pointer; }
 .phone-app-card small { color: var(--phone-muted); }
-.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:10px 12px 12px; border-top:1px solid var(--phone-line); background:var(--phone-panel); }
+.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; flex:0 0 auto; min-height:58px; box-sizing:border-box; padding:10px 12px max(12px, var(--tavo-inset-bottom-input, 0px)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
 .phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:8px 2px; font-size:11px; cursor:pointer; }
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }
@@ -94,6 +99,7 @@
     threads: {},
     moments: [],
     github: { repository: "", branch: "main", token: "" },
+    wechat: { autoScanEnabled: true },
     detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 }
   };
   function clone(value) {
@@ -112,6 +118,7 @@
         ...input.github || {},
         repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join("/")
       },
+      wechat: { ...clone(DEFAULT_PHONE_STATE.wechat), ...input.wechat || {} },
       detection: { ...clone(DEFAULT_PHONE_STATE.detection), ...input.detection || {} }
     };
   }
@@ -564,6 +571,83 @@
     };
   }
 
+  // src/runtime/proactive.js
+  function shouldProactivelyMessage({ contact, event, settings = {}, random = Math.random }) {
+    if (!settings.enabled) return { allowed: false, reason: "disabled" };
+    const present = new Set(event?.presentCharacterIds || []);
+    if (present.has(contact?.id)) return { allowed: false, reason: "same_scene" };
+    const at = Date.parse(event?.at || (/* @__PURE__ */ new Date()).toISOString());
+    const last = contact?.lastContactAt ? Date.parse(contact.lastContactAt) : 0;
+    const elapsedMinutes = last ? Math.max(0, at - last) / 6e4 : Infinity;
+    if (elapsedMinutes < Number(settings.cooldownMinutes ?? 30)) return { allowed: false, reason: "cooldown" };
+    const elapsedHours = elapsedMinutes / 60;
+    if (Number.isFinite(elapsedHours) && elapsedHours < Number(settings.absentAfterHours ?? 24)) {
+      return { allowed: false, reason: "recently_contacted" };
+    }
+    if (random() > Number(settings.probability ?? 0.2)) return { allowed: false, reason: "probability" };
+    return { allowed: true, reason: "eligible" };
+  }
+
+  // src/runtime/social-scanner.js
+  function messageText(messages) {
+    return messages.slice(-12).map((message) => `[${message.role || (message.isUser ? "user" : "assistant")}] ${message.content || ""}`).join("\n");
+  }
+  function presentCharacters(messages) {
+    return [...new Set(messages.slice(-8).flatMap((message) => [message.characterId, ...message.characterIds || []].filter(Boolean).map(Number)))];
+  }
+  async function runSocialBackground({ state, event = {}, threadService, roleDialogueService, force = false }) {
+    if (!state || !threadService || !roleDialogueService) return { proactive: 0, roleDialogue: 0 };
+    if (!force && state.wechat?.autoScanEnabled === false) return { proactive: 0, roleDialogue: 0 };
+    const current = (state.identities || []).find((identity) => identity.id === state.activeIdentityId);
+    if (!current) return { proactive: 0, roleDialogue: 0 };
+    const contacts = (state.identities || []).filter((identity) => identity.kind === "character" && identity.id !== current.id && identity.characterId);
+    const eventAt = event.at || (/* @__PURE__ */ new Date()).toISOString();
+    const presentCharacterIds = event.presentCharacterIds || [];
+    let proactive = 0;
+    if (current.settings?.proactiveEnabled) {
+      for (const contact of contacts) {
+        const existingThread = Object.values(state.threads || {}).find((thread2) => thread2.identityId === current.id && thread2.kind === "user-character" && thread2.participantIds.includes(contact.characterId));
+        const decision = shouldProactivelyMessage({
+          contact: { id: contact.characterId, lastContactAt: existingThread?.lastContactAt },
+          event: { ...event, at: eventAt, presentCharacterIds },
+          settings: { enabled: contact.settings?.proactiveEnabled !== false, probability: current.settings.proactiveProbability ?? 1, cooldownMinutes: current.settings.proactiveCooldownMinutes ?? 30, absentAfterHours: current.settings.proactiveAbsentAfterHours ?? 24 }
+        });
+        if (!decision.allowed) continue;
+        const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "user-character", participantIds: [contact.characterId], title: contact.name });
+        await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: contact.characterId, speakerName: contact.name, context: event.text || "" });
+        proactive += 1;
+        break;
+      }
+    }
+    let roleDialogue = 0;
+    if (current.settings?.roleDialogueEnabled && contacts.length >= 2) {
+      const [first, second] = contacts;
+      const thread = await threadService.getOrCreateThread({ identityId: current.id, kind: "character-character", participantIds: [first.characterId, second.characterId], title: `${first.name} \u4E0E ${second.name}` });
+      await roleDialogueService.generateExchange({ threadId: thread.id, speakerId: first.characterId, speakerName: first.name, context: event.text || "" });
+      roleDialogue = 1;
+    }
+    return { proactive, roleDialogue };
+  }
+  function createSocialScanner({ adapter, storage, threadService, roleDialogueService, now = () => (/* @__PURE__ */ new Date()).toISOString() }) {
+    return {
+      async scan(chatId = null) {
+        if (!adapter?.listMessages || !storage?.loadGlobal) return { proactive: 0, roleDialogue: 0 };
+        const chat = chatId ?? await adapter.currentChat?.();
+        const resolvedChatId = typeof chat === "object" ? chat?.id : chat;
+        if (!resolvedChatId) return { proactive: 0, roleDialogue: 0 };
+        const messages = await adapter.listMessages(resolvedChatId);
+        const state = await storage.loadGlobal();
+        return runSocialBackground({
+          state,
+          threadService,
+          roleDialogueService,
+          force: true,
+          event: { chatId: resolvedChatId, text: messageText(messages), at: now(), presentCharacterIds: presentCharacters(messages) }
+        });
+      }
+    };
+  }
+
   // src/detection/round-counter.js
   function roleOf(message) {
     if (message?.role) return message.role;
@@ -718,6 +802,7 @@ ${transcript}`
         ...input.github || {},
         repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join("/")
       },
+      wechat: { ...DEFAULT_PHONE_STATE.wechat || { autoScanEnabled: true }, ...input.wechat || {} },
       detection: { ...DEFAULT_PHONE_STATE.detection, ...input.detection || {} }
     };
   }
@@ -736,6 +821,7 @@ ${transcript}`
     const importService = options.importService || (adapter ? createImportService({ client: new GitHubClient(), adapter }) : null);
     const manualDetection = options.manualDetection || (storage && adapter ? createManualDetectionService({ adapter, storage }) : null);
     const roleDialogue = adapter && threadService ? createRoleDialogueService({ adapter, threadService }) : null;
+    const socialScanner = options.socialScanner || (storage && adapter && threadService && roleDialogue ? createSocialScanner({ adapter, storage, threadService, roleDialogueService: roleDialogue }) : null);
     const localize = (key, fallback) => {
       try {
         return tavoFacade?.plugin?.i18n?.t?.(key) || fallback;
@@ -749,11 +835,65 @@ ${transcript}`
       } catch {
       }
     };
+    const dragCleanups = [];
+    let suppressLauncherClick = false;
+    function enableDragging(node, handle = node, { onDragged } = {}) {
+      const viewport = globalThis.window || document.defaultView || globalThis;
+      let drag = null;
+      const onPointerDown = (event) => {
+        if (event.button !== void 0 && event.button !== 0) return;
+        if (handle !== node && event.target?.closest?.("button")) return;
+        const rect = node.getBoundingClientRect?.() || {};
+        const width = rect.width || node.offsetWidth || (node === launcher ? 54 : 390);
+        const height = rect.height || node.offsetHeight || (node === launcher ? 54 : 500);
+        const left = Number.isFinite(rect.left) && rect.left ? rect.left : Math.max(0, (Number(viewport.innerWidth) || 800) - width - (node === launcher ? 18 : 14));
+        const top = Number.isFinite(rect.top) && rect.top ? rect.top : node === launcher ? Math.max(0, (Number(viewport.innerHeight) || 600) - height - 18) : 14;
+        drag = { startX: event.clientX || 0, startY: event.clientY || 0, left, top, width, height, moved: false };
+        node.style.cursor = "grabbing";
+        event.preventDefault?.();
+      };
+      const onPointerMove = (event) => {
+        if (!drag) return;
+        const dx = (event.clientX || 0) - drag.startX;
+        const dy = (event.clientY || 0) - drag.startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+        const maxLeft = Math.max(0, (Number(viewport.innerWidth) || 800) - drag.width);
+        const maxTop = Math.max(0, (Number(viewport.innerHeight) || 600) - drag.height);
+        const left = Math.min(maxLeft, Math.max(0, drag.left + dx));
+        const top = Math.min(maxTop, Math.max(0, drag.top + dy));
+        node.style.left = `${left}px`;
+        node.style.top = `${top}px`;
+        node.style.right = "auto";
+        node.style.bottom = "auto";
+        event.preventDefault?.();
+      };
+      const onPointerUp = () => {
+        if (!drag) return;
+        const moved = drag.moved;
+        drag = null;
+        node.style.cursor = "grab";
+        if (moved) onDragged?.();
+      };
+      handle.addEventListener("pointerdown", onPointerDown);
+      viewport.addEventListener?.("pointermove", onPointerMove);
+      viewport.addEventListener?.("pointerup", onPointerUp);
+      viewport.addEventListener?.("pointercancel", onPointerUp);
+      return () => {
+        handle.removeEventListener("pointerdown", onPointerDown);
+        viewport.removeEventListener?.("pointermove", onPointerMove);
+        viewport.removeEventListener?.("pointerup", onPointerUp);
+        viewport.removeEventListener?.("pointercancel", onPointerUp);
+      };
+    }
     const launcher = el("button", {
       className: "phone-launcher",
       "aria-label": localize("runtime.openPhone", "\u6253\u5F00\u5C0F\u624B\u673A"),
       text: "\u2302",
       onClick: () => {
+        if (suppressLauncherClick) {
+          suppressLauncherClick = false;
+          return;
+        }
         open = true;
         refresh().catch(() => {
         });
@@ -779,6 +919,10 @@ ${transcript}`
     const nav = el("nav", { className: "phone-nav", "aria-label": "\u5FAE\u4FE1\u5BFC\u822A" });
     shell.append(topbar, content, nav);
     root.replaceChildren(launcher, shell);
+    dragCleanups.push(enableDragging(launcher, launcher, { onDragged: () => {
+      suppressLauncherClick = true;
+    } }));
+    dragCleanups.push(enableDragging(shell, topbar));
     async function refresh() {
       if (!storage?.loadGlobal) return;
       try {
@@ -979,7 +1123,29 @@ ${transcript}`
         page = "thread";
         render();
       } }, [el("span", { text: thread.title || thread.participantIds.join("\u3001") || "\u672A\u547D\u540D\u4F1A\u8BDD" }), el("small", { text: thread.unread ? `${thread.unread} \u6761\u672A\u8BFB` : "\u5DF2\u8BFB" })])) : [el("p", { className: "phone-muted", text: "\u6682\u65E0\u4F1A\u8BDD\uFF0C\u53EF\u4ECE\u901A\u8BAF\u5F55\u53D1\u8D77\u804A\u5929\u3002" })];
-      content.replaceChildren(el("div", { className: "phone-section" }, [el("div", { className: "phone-card" }, [el("strong", { text: "\u4F1A\u8BDD" }), ...list])]));
+      const autoScan = el("input", { type: "checkbox", "data-action": "wechat-auto-scan", checked: state.wechat?.autoScanEnabled !== false ? "checked" : void 0, "aria-label": "\u81EA\u52A8\u626B\u63CF\u5267\u60C5" });
+      autoScan.addEventListener("change", async () => {
+        state.wechat = { ...state.wechat || {}, autoScanEnabled: autoScan.checked };
+        await save();
+      });
+      const scan = el("button", { className: "phone-button primary", "data-action": "wechat-scan", text: "\u7ACB\u5373\u626B\u63CF\u5267\u60C5", onClick: async () => {
+        if (!socialScanner) return notify("\u5FAE\u4FE1\u626B\u63CF\u670D\u52A1\u6682\u4E0D\u53EF\u7528");
+        scan.disabled = true;
+        try {
+          const result = await socialScanner.scan();
+          if (storage?.loadGlobal) state = mergeState(await storage.loadGlobal() || state);
+          const count = Number(result?.proactive || 0) + Number(result?.roleDialogue || 0);
+          await notify(count ? `\u626B\u63CF\u5B8C\u6210\uFF0C\u65B0\u589E ${count} \u6761\u89D2\u8272\u52A8\u6001` : "\u626B\u63CF\u5B8C\u6210\uFF0C\u6682\u65E0\u65B0\u7684\u89D2\u8272\u52A8\u6001");
+          render();
+        } catch (error) {
+          await notify(error.message || "\u5FAE\u4FE1\u626B\u63CF\u5931\u8D25");
+          scan.disabled = false;
+        }
+      } });
+      content.replaceChildren(el("div", { className: "phone-section" }, [
+        el("div", { className: "phone-card phone-section" }, [el("strong", { text: "\u5267\u60C5\u626B\u63CF" }), el("label", { className: "phone-row", text: "\u81EA\u52A8\u626B\u63CF\u751F\u6210\u540E\u7684\u5267\u60C5" }, [autoScan]), scan]),
+        el("div", { className: "phone-card" }, [el("strong", { text: "\u4F1A\u8BDD" }), ...list])
+      ]));
     }
     function renderContacts() {
       const contacts = state.identities.filter((item) => item.id !== state.activeIdentityId && item.kind === "character");
@@ -1085,7 +1251,10 @@ ${transcript}`
       else renderHome();
     }
     render();
-    return { render, refresh, dispose: () => root.replaceChildren() };
+    return { render, refresh, dispose: () => {
+      dragCleanups.forEach((cleanup) => cleanup());
+      root.replaceChildren();
+    } };
   }
   if (typeof document !== "undefined") {
     const root = document.querySelector("[data-shiyu-phone]");

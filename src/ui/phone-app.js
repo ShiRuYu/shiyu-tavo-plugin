@@ -6,6 +6,7 @@ import { createIdentityService } from '../wechat/identity-store.js';
 import { createThreadService } from '../wechat/thread-store.js';
 import { createMomentsService } from '../wechat/moments-store.js';
 import { createRoleDialogueService } from '../runtime/role-dialogue.js';
+import { createSocialScanner } from '../runtime/social-scanner.js';
 import { createManualDetectionService } from '../detection/manual-detection.js';
 import { parseDetectorResponse } from '../detection/role-detector.js';
 
@@ -41,6 +42,7 @@ function mergeState(input = {}) {
       ...(input.github || {}),
       repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join('/'),
     },
+    wechat: { ...(DEFAULT_PHONE_STATE.wechat || { autoScanEnabled: true }), ...(input.wechat || {}) },
     detection: { ...DEFAULT_PHONE_STATE.detection, ...(input.detection || {}) },
   };
 }
@@ -60,18 +62,70 @@ export function mountPhone(root, options = {}) {
   const importService = options.importService || (adapter ? createImportService({ client: new GitHubClient(), adapter }) : null);
   const manualDetection = options.manualDetection || (storage && adapter ? createManualDetectionService({ adapter, storage }) : null);
   const roleDialogue = adapter && threadService ? createRoleDialogueService({ adapter, threadService }) : null;
+  const socialScanner = options.socialScanner || (storage && adapter && threadService && roleDialogue ? createSocialScanner({ adapter, storage, threadService, roleDialogueService: roleDialogue }) : null);
   const localize = (key, fallback) => {
     try { return tavoFacade?.plugin?.i18n?.t?.(key) || fallback; } catch { return fallback; }
   };
   const notify = async (message) => {
     try { await tavoFacade?.utils?.toast?.(message); } catch { /* no-op in a test fixture */ }
   };
+  const dragCleanups = [];
+  let suppressLauncherClick = false;
+
+  function enableDragging(node, handle = node, { onDragged } = {}) {
+    const viewport = globalThis.window || document.defaultView || globalThis;
+    let drag = null;
+    const onPointerDown = (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      if (handle !== node && event.target?.closest?.('button')) return;
+      const rect = node.getBoundingClientRect?.() || {};
+      const width = rect.width || node.offsetWidth || (node === launcher ? 54 : 390);
+      const height = rect.height || node.offsetHeight || (node === launcher ? 54 : 500);
+      const left = Number.isFinite(rect.left) && rect.left ? rect.left : Math.max(0, (Number(viewport.innerWidth) || 800) - width - (node === launcher ? 18 : 14));
+      const top = Number.isFinite(rect.top) && rect.top ? rect.top : (node === launcher ? Math.max(0, (Number(viewport.innerHeight) || 600) - height - 18) : 14);
+      drag = { startX: event.clientX || 0, startY: event.clientY || 0, left, top, width, height, moved: false };
+      node.style.cursor = 'grabbing';
+      event.preventDefault?.();
+    };
+    const onPointerMove = (event) => {
+      if (!drag) return;
+      const dx = (event.clientX || 0) - drag.startX;
+      const dy = (event.clientY || 0) - drag.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+      const maxLeft = Math.max(0, (Number(viewport.innerWidth) || 800) - drag.width);
+      const maxTop = Math.max(0, (Number(viewport.innerHeight) || 600) - drag.height);
+      const left = Math.min(maxLeft, Math.max(0, drag.left + dx));
+      const top = Math.min(maxTop, Math.max(0, drag.top + dy));
+      node.style.left = `${left}px`;
+      node.style.top = `${top}px`;
+      node.style.right = 'auto';
+      node.style.bottom = 'auto';
+      event.preventDefault?.();
+    };
+    const onPointerUp = () => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      node.style.cursor = 'grab';
+      if (moved) onDragged?.();
+    };
+    handle.addEventListener('pointerdown', onPointerDown);
+    viewport.addEventListener?.('pointermove', onPointerMove);
+    viewport.addEventListener?.('pointerup', onPointerUp);
+    viewport.addEventListener?.('pointercancel', onPointerUp);
+    return () => {
+      handle.removeEventListener('pointerdown', onPointerDown);
+      viewport.removeEventListener?.('pointermove', onPointerMove);
+      viewport.removeEventListener?.('pointerup', onPointerUp);
+      viewport.removeEventListener?.('pointercancel', onPointerUp);
+    };
+  }
 
   const launcher = el('button', {
     className: 'phone-launcher',
     'aria-label': localize('runtime.openPhone', '打开小手机'),
     text: '⌂',
-    onClick: () => { open = true; refresh().catch(() => {}); render(); },
+    onClick: () => { if (suppressLauncherClick) { suppressLauncherClick = false; return; } open = true; refresh().catch(() => {}); render(); },
   });
   const shell = el('section', { className: 'phone-shell', hidden: '' });
   const topbar = el('header', { className: 'phone-topbar' });
@@ -84,6 +138,8 @@ export function mountPhone(root, options = {}) {
   const nav = el('nav', { className: 'phone-nav', 'aria-label': '微信导航' });
   shell.append(topbar, content, nav);
   root.replaceChildren(launcher, shell);
+  dragCleanups.push(enableDragging(launcher, launcher, { onDragged: () => { suppressLauncherClick = true; } }));
+  dragCleanups.push(enableDragging(shell, topbar));
 
   async function refresh() {
     if (!storage?.loadGlobal) return;
@@ -247,7 +303,23 @@ export function mountPhone(root, options = {}) {
     title.textContent = '微信';
     const threads = Object.values(state.threads || {}).filter((thread) => thread.identityId === state.activeIdentityId);
     const list = threads.length ? threads.map((thread) => el('button', { className: 'phone-app-card', onClick: () => { activeThreadId = thread.id; page = 'thread'; render(); } }, [el('span', { text: thread.title || thread.participantIds.join('、') || '未命名会话' }), el('small', { text: thread.unread ? `${thread.unread} 条未读` : '已读' })])) : [el('p', { className: 'phone-muted', text: '暂无会话，可从通讯录发起聊天。' })];
-    content.replaceChildren(el('div', { className: 'phone-section' }, [el('div', { className: 'phone-card' }, [el('strong', { text: '会话' }), ...list])]));
+    const autoScan = el('input', { type: 'checkbox', 'data-action': 'wechat-auto-scan', checked: state.wechat?.autoScanEnabled !== false ? 'checked' : undefined, 'aria-label': '自动扫描剧情' });
+    autoScan.addEventListener('change', async () => { state.wechat = { ...(state.wechat || {}), autoScanEnabled: autoScan.checked }; await save(); });
+    const scan = el('button', { className: 'phone-button primary', 'data-action': 'wechat-scan', text: '立即扫描剧情', onClick: async () => {
+      if (!socialScanner) return notify('微信扫描服务暂不可用');
+      scan.disabled = true;
+      try {
+        const result = await socialScanner.scan();
+        if (storage?.loadGlobal) state = mergeState(await storage.loadGlobal() || state);
+        const count = Number(result?.proactive || 0) + Number(result?.roleDialogue || 0);
+        await notify(count ? `扫描完成，新增 ${count} 条角色动态` : '扫描完成，暂无新的角色动态');
+        render();
+      } catch (error) { await notify(error.message || '微信扫描失败'); scan.disabled = false; }
+    } });
+    content.replaceChildren(el('div', { className: 'phone-section' }, [
+      el('div', { className: 'phone-card phone-section' }, [el('strong', { text: '剧情扫描' }), el('label', { className: 'phone-row', text: '自动扫描生成后的剧情' }, [autoScan]), scan]),
+      el('div', { className: 'phone-card' }, [el('strong', { text: '会话' }), ...list]),
+    ]));
   }
 
   function renderContacts() {
@@ -324,7 +396,7 @@ export function mountPhone(root, options = {}) {
   }
 
   render();
-  return { render, refresh, dispose: () => root.replaceChildren() };
+  return { render, refresh, dispose: () => { dragCleanups.forEach((cleanup) => cleanup()); root.replaceChildren(); } };
 }
 
 if (typeof document !== 'undefined') {

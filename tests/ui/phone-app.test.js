@@ -36,6 +36,66 @@ test('wechat UI exposes four navigation tabs', async () => {
   delete globalThis.document;
 });
 
+test('wechat UI exposes manual and automatic scan controls', async () => {
+  const window = new Window();
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const { mountPhone } = await import('../../src/ui/phone-app.js?ui-test=wechat-scan');
+  const root = document.createElement('div');
+  document.body.append(root);
+  let scans = 0;
+  const app = mountPhone(root, {
+    state: { activeIdentity: { name: '用户' }, candidates: [], contacts: [], moments: [], wechat: { autoScanEnabled: true } },
+    socialScanner: { scan: async () => { scans += 1; return { proactive: 1, roleDialogue: 0 }; } },
+  });
+  root.querySelector('.phone-launcher').click();
+  root.querySelector('[data-app="wechat"]').click();
+  assert.ok(root.querySelector('[data-action="wechat-scan"]'));
+  assert.ok(root.querySelector('[data-action="wechat-auto-scan"]'));
+  root.querySelector('[data-action="wechat-scan"]').click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scans, 1);
+  app.dispose();
+  delete globalThis.window;
+  delete globalThis.document;
+});
+
+test('phone launcher and shell respond to pointer dragging', async () => {
+  const window = new Window();
+  globalThis.window = window;
+  globalThis.document = window.document;
+  Object.defineProperty(window, 'innerWidth', { value: 900, configurable: true });
+  Object.defineProperty(window, 'innerHeight', { value: 700, configurable: true });
+  const { mountPhone } = await import('../../src/ui/phone-app.js?ui-test=drag');
+  const root = document.createElement('div');
+  document.body.append(root);
+  const app = mountPhone(root, { state: { activeIdentity: { name: '用户' }, candidates: [], contacts: [], moments: [] } });
+  const launcher = root.querySelector('.phone-launcher');
+  const down = new window.Event('pointerdown');
+  Object.assign(down, { clientX: 100, clientY: 100 });
+  launcher.dispatchEvent(down);
+  const move = new window.Event('pointermove');
+  Object.assign(move, { clientX: 250, clientY: 220 });
+  window.dispatchEvent(move);
+  window.dispatchEvent(new window.Event('pointerup'));
+  assert.match(launcher.style.left, /px/);
+  launcher.click();
+  launcher.click();
+  const shell = root.querySelector('.phone-shell');
+  assert.equal(shell.hidden, false);
+  const shellDown = new window.Event('pointerdown');
+  Object.assign(shellDown, { clientX: 300, clientY: 200 });
+  root.querySelector('.phone-topbar').dispatchEvent(shellDown);
+  const shellMove = new window.Event('pointermove');
+  Object.assign(shellMove, { clientX: 420, clientY: 320 });
+  window.dispatchEvent(shellMove);
+  window.dispatchEvent(new window.Event('pointerup'));
+  assert.match(shell.style.left, /px/);
+  app.dispose();
+  delete globalThis.window;
+  delete globalThis.document;
+});
+
 test('github browse persists the current repository form before listing files', async () => {
   const window = new Window();
   globalThis.window = window;

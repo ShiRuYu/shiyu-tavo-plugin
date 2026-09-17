@@ -29,6 +29,7 @@
   color: var(--phone-teal);
   box-shadow: 0 12px 32px #0008;
   cursor: grab;
+  touch-action: none;
 }
 
 .phone-shell {
@@ -37,7 +38,11 @@
   top: calc(var(--tavo-inset-top-bar, 0px) + 14px);
   bottom: calc(var(--tavo-inset-bottom-input, 0px) + 14px);
   width: min(390px, calc(100vw - 28px));
-  min-height: 500px;
+  min-height: min(420px, calc(100vh - var(--tavo-inset-top-bar, 0px) - var(--tavo-inset-bottom-input, 0px) - 28px));
+  max-height: calc(100vh - var(--tavo-inset-top-bar, 0px) - var(--tavo-inset-bottom-input, 0px) - 28px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   overflow: hidden;
   border: 1px solid #ffffff18;
   border-radius: 28px;
@@ -46,16 +51,16 @@
 }
 
 .phone-shell[hidden], .phone-launcher[hidden] { display: none; }
-.phone-topbar { display:flex; align-items:center; justify-content:space-between; padding: 18px 18px 12px; }
+.phone-topbar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex:0 0 auto; padding: 18px 18px 12px; touch-action:none; cursor:grab; }
 .phone-identity { color: var(--phone-teal); font-size: 12px; }
 .phone-title { margin: 0; font-size: 20px; }
 .phone-home-button, .phone-close, .phone-back { border: 0; background: transparent; color: var(--phone-muted); cursor: pointer; }
 .phone-home-button { font-size: 20px; line-height: 1; padding: 2px 6px; }
-.phone-content { height: calc(100% - 110px); overflow-y: auto; padding: 0 16px 18px; }
+.phone-content { flex:1 1 auto; min-height:0; height:auto; overflow-y:auto; box-sizing:border-box; padding: 0 16px 18px; }
 .phone-home-grid { display:grid; grid-template-columns:1fr; gap:12px; padding-top:16px; }
 .phone-app-card { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--phone-line); border-radius:18px; padding:16px; background:var(--phone-panel); color:var(--phone-text); text-align:left; cursor:pointer; }
 .phone-app-card small { color: var(--phone-muted); }
-.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:10px 12px 12px; border-top:1px solid var(--phone-line); background:var(--phone-panel); }
+.phone-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; flex:0 0 auto; min-height:58px; box-sizing:border-box; padding:10px 12px max(12px, var(--tavo-inset-bottom-input, 0px)); border-top:1px solid var(--phone-line); background:var(--phone-panel); }
 .phone-nav button { border:0; background:transparent; color:var(--phone-muted); padding:8px 2px; font-size:11px; cursor:pointer; }
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }

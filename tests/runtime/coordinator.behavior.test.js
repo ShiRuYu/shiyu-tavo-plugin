@@ -40,3 +40,28 @@ test('generation success queues role detection without blocking the hook', async
   await coordinator.flush();
   assert.equal(detectCalls, 1);
 });
+
+test('generation success automatically scans social state when enabled', async () => {
+  let generated = 0;
+  const state = {
+    activeIdentityId: 'user:default',
+    wechat: { autoScanEnabled: true },
+    identities: [
+      { id: 'user:default', kind: 'user', settings: { proactiveEnabled: true } },
+      { id: 'character:8', kind: 'character', characterId: 8, name: '周澜', settings: { proactiveEnabled: true } },
+    ],
+    threads: {},
+    candidates: [],
+    detection: { enabled: false },
+  };
+  const coordinator = createRuntimeCoordinator({
+    tavo: { plugin: { on: () => {} } },
+    adapter: {},
+    storage: { loadGlobal: async () => state, loadChatLink: async () => ({ digest: '' }) },
+    threadService: { getOrCreateThread: async (input) => ({ id: 'thread-1', ...input }) },
+    roleDialogueService: { generateExchange: async () => { generated += 1; } },
+  });
+  await coordinator.handlers['generation:success']({ chatId: 7, text: '周澜离开了现场。', presentCharacterIds: [] });
+  await coordinator.flush();
+  assert.equal(generated, 1);
+});
