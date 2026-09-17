@@ -14,7 +14,7 @@ export const DEFAULT_PHONE_STATE = {
   candidates: [],
   threads: {},
   moments: [],
-  github: { repository: '', branch: 'main', token: '' },
+  github: { repository: '', branch: 'main', token: '', importHistory: {} },
   wechat: { autoScanEnabled: true },
   detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 },
 };

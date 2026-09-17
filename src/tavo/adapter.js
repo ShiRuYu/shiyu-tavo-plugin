@@ -10,6 +10,7 @@ function optionsWithRequestId(requestId) {
 }
 
 export function createTavoAdapter(tavo) {
+  const resourceApi = (kind) => ({ character: tavo?.character, lorebook: tavo?.lorebook, preset: tavo?.preset, regex: tavo?.regex }[kind]);
   return {
     async currentChat() {
       return tavo?.chat?.current?.() ?? null;
@@ -40,6 +41,34 @@ export function createTavoAdapter(tavo) {
     async createPreset(preset, requestId) {
       if (!tavo?.preset?.create) throw new Error('Tavo preset API is unavailable');
       return tavo.preset.create(preset, optionsWithRequestId(requestId));
+    },
+    async createRegex(regex, requestId) {
+      if (!tavo?.regex?.create) throw new Error('Tavo regex API is unavailable');
+      return tavo.regex.create(regex, optionsWithRequestId(requestId));
+    },
+    async importResource(kind, resource, requestId) {
+      const api = resourceApi(kind);
+      if (!api) throw new Error(`Tavo ${kind} API is unavailable`);
+      if (typeof api.import === 'function') return api.import(resource, optionsWithRequestId(requestId));
+      const method = { character: 'createCharacter', lorebook: 'createLorebook', preset: 'createPreset', regex: 'createRegex' }[kind];
+      if (method && typeof this[method] === 'function') return this[method](resource, requestId);
+      throw new Error(`Tavo ${kind} import API is unavailable`);
+    },
+    async findResource(kind, name) {
+      const api = resourceApi(kind);
+      if (!api) return [];
+      if (typeof api.find === 'function') return api.find(name, { match: 'exact' });
+      if (kind === 'character' && typeof api.search === 'function') return api.search({ name, match: 'exact' });
+      return [];
+    },
+    async getResource(kind, id) {
+      const api = resourceApi(kind);
+      return typeof api?.get === 'function' ? api.get(id) : null;
+    },
+    async updateResource(kind, resource) {
+      const api = resourceApi(kind);
+      if (typeof api?.update !== 'function') throw new Error(`Tavo ${kind} update API is unavailable`);
+      return api.update(resource);
     },
     async appendMessage(chatId, message, requestId) {
       if (!tavo?.message?.append) throw new Error('Tavo message API is unavailable');

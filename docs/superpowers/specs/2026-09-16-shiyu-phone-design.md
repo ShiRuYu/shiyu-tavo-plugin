@@ -27,7 +27,7 @@
 
 ### 内容导入
 
-配置仓库（`owner/repo` 或 GitHub URL）、branch/token，调用 GitHub REST API 加载树并按目录浏览文件。支持 Tavo/CCv3、CCv2、SillyTavern World Info 和 PNG 角色卡；导入提供新建、覆盖、跳过策略。
+配置仓库（`owner/repo` 或 GitHub URL）、branch/token，调用 GitHub REST API 按目录浏览文件。支持勾选、全选、预览和批量导入 Tavo/CCv3、CCv2、SillyTavern World Info、正则和 PNG 角色卡；导入前记录来源去重，重复资源提供更新、新建副本或跳过策略。
 
 ### 微信
 

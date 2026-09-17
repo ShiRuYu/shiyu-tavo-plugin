@@ -65,6 +65,8 @@
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }
 .phone-card { border:1px solid var(--phone-line); border-radius:16px; background:var(--phone-panel); padding:14px; }
+.phone-card pre, pre.phone-card { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-word; font:11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.phone-card input[type="checkbox"] { accent-color:var(--phone-teal); }
 .phone-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .phone-muted { color:var(--phone-muted); }
 .phone-pill { border-radius:999px; padding:4px 8px; background:var(--phone-panel-2); color:var(--phone-muted); font-size:11px; }

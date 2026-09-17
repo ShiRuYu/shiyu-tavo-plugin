@@ -67,6 +67,8 @@
 .phone-nav button[aria-current="page"] { color:var(--phone-teal); }
 .phone-section { display:grid; gap:12px; }
 .phone-card { border:1px solid var(--phone-line); border-radius:16px; background:var(--phone-panel); padding:14px; }
+.phone-card pre, pre.phone-card { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-word; font:11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.phone-card input[type="checkbox"] { accent-color:var(--phone-teal); }
 .phone-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .phone-muted { color:var(--phone-muted); }
 .phone-pill { border-radius:999px; padding:4px 8px; background:var(--phone-panel-2); color:var(--phone-muted); font-size:11px; }
@@ -98,7 +100,7 @@
     candidates: [],
     threads: {},
     moments: [],
-    github: { repository: "", branch: "main", token: "" },
+    github: { repository: "", branch: "main", token: "", importHistory: {} },
     wechat: { autoScanEnabled: true },
     detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 }
   };
@@ -180,6 +182,7 @@
     return requestId ? { clientRequestId: requestId } : void 0;
   }
   function createTavoAdapter(tavo2) {
+    const resourceApi = (kind) => ({ character: tavo2?.character, lorebook: tavo2?.lorebook, preset: tavo2?.preset, regex: tavo2?.regex })[kind];
     return {
       async currentChat() {
         return tavo2?.chat?.current?.() ?? null;
@@ -211,6 +214,34 @@
         if (!tavo2?.preset?.create) throw new Error("Tavo preset API is unavailable");
         return tavo2.preset.create(preset, optionsWithRequestId(requestId));
       },
+      async createRegex(regex, requestId) {
+        if (!tavo2?.regex?.create) throw new Error("Tavo regex API is unavailable");
+        return tavo2.regex.create(regex, optionsWithRequestId(requestId));
+      },
+      async importResource(kind, resource, requestId) {
+        const api = resourceApi(kind);
+        if (!api) throw new Error(`Tavo ${kind} API is unavailable`);
+        if (typeof api.import === "function") return api.import(resource, optionsWithRequestId(requestId));
+        const method = { character: "createCharacter", lorebook: "createLorebook", preset: "createPreset", regex: "createRegex" }[kind];
+        if (method && typeof this[method] === "function") return this[method](resource, requestId);
+        throw new Error(`Tavo ${kind} import API is unavailable`);
+      },
+      async findResource(kind, name) {
+        const api = resourceApi(kind);
+        if (!api) return [];
+        if (typeof api.find === "function") return api.find(name, { match: "exact" });
+        if (kind === "character" && typeof api.search === "function") return api.search({ name, match: "exact" });
+        return [];
+      },
+      async getResource(kind, id) {
+        const api = resourceApi(kind);
+        return typeof api?.get === "function" ? api.get(id) : null;
+      },
+      async updateResource(kind, resource) {
+        const api = resourceApi(kind);
+        if (typeof api?.update !== "function") throw new Error(`Tavo ${kind} update API is unavailable`);
+        return api.update(resource);
+      },
       async appendMessage(chatId, message, requestId) {
         if (!tavo2?.message?.append) throw new Error("Tavo message API is unavailable");
         return tavo2.message.append({ ...message, chatId }, optionsWithRequestId(requestId));
@@ -223,28 +254,52 @@
 
   // src/github/client.js
   var API_ROOT = "https://api.github.com";
-  function parseRepositoryInput(value) {
-    const input = String(value || "").trim().replace(/\/$/, "");
-    if (!input) return { owner: "", repo: "" };
-    try {
-      const url = new URL(input.includes("://") ? input : `https://github.com/${input}`);
-      if (url.hostname.toLowerCase() !== "github.com") return { owner: "", repo: "" };
-      const parts = url.pathname.split("/").filter(Boolean);
-      if (parts.length < 2) return { owner: "", repo: "" };
-      return { owner: parts[0], repo: parts[1].replace(/\.git$/, "") };
-    } catch {
-      return { owner: "", repo: "" };
-    }
+  function normalizePath(value) {
+    return String(value || "").replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).join("/");
   }
-  function repositoryParts(config) {
-    const parsed = parseRepositoryInput(config?.repository);
+  function normalizeRef(value, fallback = "main") {
+    const ref = decodeURIComponent(String(value || "").trim()) || fallback;
+    return ref.replace(/^refs\/(?:heads|tags)\//, "");
+  }
+  function isSafePath(value) {
+    const path = String(value || "");
+    return !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes("..");
+  }
+  function parseRepositorySource(value, defaultBranch = "main") {
+    const input = String(value || "").trim();
+    if (!input) return { owner: "", repo: "", branch: normalizeRef(defaultBranch), path: "" };
+    let url;
+    try {
+      url = new URL(input.includes("://") ? input : `https://github.com/${input}`);
+    } catch {
+      return { owner: "", repo: "", branch: normalizeRef(defaultBranch), path: "" };
+    }
+    const host = url.hostname.toLowerCase();
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (host === "raw.githubusercontent.com") {
+      if (parts.length < 3) return { owner: "", repo: "", branch: normalizeRef(defaultBranch), path: "" };
+      return { owner: parts[0], repo: parts[1].replace(/\.git$/, ""), branch: normalizeRef(parts[2], defaultBranch), path: normalizePath(parts.slice(3).map(decodeURIComponent).join("/")) };
+    }
+    if (host !== "github.com" || parts.length < 2) return { owner: "", repo: "", branch: normalizeRef(defaultBranch), path: "" };
+    const source = { owner: parts[0], repo: parts[1].replace(/\.git$/, ""), branch: normalizeRef(defaultBranch), path: "" };
+    if (parts[2] === "tree" || parts[2] === "blob") {
+      if (!parts[3]) return { owner: "", repo: "", branch: normalizeRef(defaultBranch), path: "" };
+      source.branch = normalizeRef(parts[3], defaultBranch);
+      source.path = normalizePath(parts.slice(4).map(decodeURIComponent).join("/"));
+    }
+    return source;
+  }
+  function repositoryParts(config = {}) {
+    const parsed = parseRepositorySource(config.repository || [config.owner, config.repo].filter(Boolean).join("/"), config.branch || "main");
     return {
-      owner: config?.owner || parsed.owner,
-      repo: config?.repo || parsed.repo
+      owner: config.owner || parsed.owner,
+      repo: config.repo || parsed.repo,
+      branch: normalizeRef(config.branch || parsed.branch),
+      path: normalizePath(config.rootPath || parsed.path)
     };
   }
   function encodePath(path) {
-    return path.split("/").filter(Boolean).map((part) => encodeURIComponent(part)).join("/");
+    return normalizePath(path).split("/").filter(Boolean).map((part) => encodeURIComponent(part)).join("/");
   }
   function decodeBase64(value) {
     const normalized = String(value || "").replace(/\s/g, "");
@@ -254,35 +309,45 @@
     }
     return Buffer.from(normalized, "base64").toString("utf8");
   }
+  function sourceUrl(source, path, kind = "blob") {
+    const suffix = encodePath(path);
+    return `https://github.com/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/${kind}/${encodeURIComponent(source.branch)}${suffix ? `/${suffix}` : ""}`;
+  }
   var GitHubClient = class {
-    constructor({ fetchImpl = globalThis.fetch, apiRoot = API_ROOT, timeoutMs = 12e3 } = {}) {
+    constructor({ fetchImpl = globalThis.fetch, apiRoot = API_ROOT, timeoutMs = 12e3, retryDelayMs = 250 } = {}) {
       this.fetchImpl = fetchImpl;
       this.apiRoot = apiRoot.replace(/\/$/, "");
       this.timeoutMs = timeoutMs;
+      this.retryDelayMs = retryDelayMs;
     }
     headers(config) {
-      const headers = { Accept: "application/vnd.github+json" };
+      const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
       if (config?.token) headers.Authorization = `Bearer ${config.token}`;
       return headers;
     }
-    async request(config, path) {
+    async request(config, path, attempt = 0) {
       const { owner, repo } = repositoryParts(config);
       if (!owner || !repo) {
         const error = new Error("GitHub repository is required (owner/repo or URL)");
         error.code = "github_config";
         throw error;
       }
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
       try {
         const response = await this.fetchImpl(`${this.apiRoot}${path}`, {
           headers: this.headers(config),
-          signal: controller.signal
+          signal: controller?.signal
         });
+        if ((response.status === 408 || response.status === 429 || response.status >= 500) && attempt < 1) {
+          if (this.retryDelayMs) await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
+          return this.request(config, path, attempt + 1);
+        }
         if (!response.ok) {
           const error = new Error(`GitHub request failed (${response.status})`);
           error.code = response.status === 401 ? "github_auth" : response.status === 403 ? "github_rate_limit" : response.status === 404 ? "github_not_found" : "github_http";
           error.status = response.status;
+          error.rateLimitReset = response.headers?.get?.("x-ratelimit-reset") || null;
           throw error;
         }
         return response.json();
@@ -294,7 +359,7 @@
         }
         throw error;
       } finally {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
       }
     }
     async testConnection(config) {
@@ -302,25 +367,99 @@
       const data = await this.request(config, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
       return { ok: true, fullName: data.full_name, defaultBranch: data.default_branch };
     }
+    async listDirectory(config, path = "") {
+      const source = repositoryParts(config);
+      const directory = normalizePath(path || source.path);
+      if (!isSafePath(directory)) {
+        const error = new Error("Unsafe repository path");
+        error.code = "github_path";
+        throw error;
+      }
+      const suffix = encodePath(directory);
+      const data = await this.request(config, `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents${suffix ? `/${suffix}` : ""}?ref=${encodeURIComponent(source.branch)}`);
+      const list = Array.isArray(data) ? data : [data];
+      return list.filter(Boolean).map((entry) => ({
+        name: String(entry.name || "").trim(),
+        path: normalizePath(entry.path),
+        type: entry.type === "directory" ? "dir" : entry.type,
+        size: Number(entry.size) || 0,
+        sha: entry.sha || "",
+        downloadUrl: entry.download_url || "",
+        htmlUrl: entry.html_url || sourceUrl(source, entry.path, entry.type === "directory" || entry.type === "dir" ? "tree" : "blob")
+      }));
+    }
     async listFiles(config) {
-      const { owner, repo } = repositoryParts(config);
-      const branch = encodeURIComponent(config.branch || "main");
-      const data = await this.request(config, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${branch}?recursive=1`);
-      const root = (config.rootPath || "").replace(/^\/+|\/+$/g, "");
+      const source = repositoryParts(config);
+      const data = await this.request(config, `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/git/trees/${encodeURIComponent(source.branch)}?recursive=1`);
+      const root = source.path;
       return (data.tree || []).filter((item) => item.type === "blob" && (!root || item.path === root || item.path.startsWith(`${root}/`)));
     }
     async readFile(config, path) {
-      const { owner, repo } = repositoryParts(config);
-      const branch = encodeURIComponent(config.branch || "main");
-      const data = await this.request(config, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodePath(path)}?ref=${branch}`);
-      const isBinary = /\.(png|webp|jpe?g|gif)$/i.test(path);
-      return { path, text: isBinary ? "" : decodeBase64(data.content), base64: isBinary ? void 0 : data.content, bytesBase64: isBinary ? data.content : void 0, sha: data.sha, size: data.size };
+      const source = repositoryParts(config);
+      const normalizedPath = normalizePath(path || source.path);
+      if (!isSafePath(normalizedPath)) {
+        const error = new Error("Unsafe repository path");
+        error.code = "github_path";
+        throw error;
+      }
+      const data = await this.request(config, `/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents/${encodePath(normalizedPath)}?ref=${encodeURIComponent(source.branch)}`);
+      const isBinary = /\.(png|webp|jpe?g|gif)$/i.test(normalizedPath);
+      return {
+        path: normalizedPath,
+        name: data.name || normalizedPath.split("/").pop(),
+        text: isBinary ? "" : decodeBase64(data.content),
+        base64: isBinary ? void 0 : data.content,
+        bytesBase64: isBinary ? data.content : void 0,
+        sha: data.sha,
+        size: data.size,
+        sourceUrl: data.html_url || sourceUrl(source, normalizedPath)
+      };
     }
   };
 
   // src/github/classifier.js
+  function isObject(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+  function unwrapCharacter(value) {
+    if (!isObject(value)) return null;
+    if (isObject(value.character)) return unwrapCharacter(value.character);
+    if (value.spec && /^chara_card_v[23]$/i.test(String(value.spec)) && isObject(value.data)) return value;
+    if (isObject(value.data) && typeof value.data.name === "string" && (typeof value.data.first_mes === "string" || typeof value.data.firstMes === "string")) return { spec: "chara_card_v3", data: value.data };
+    if (typeof value.name === "string" && (typeof value.first_mes === "string" || typeof value.firstMes === "string")) return { spec: "chara_card_v3", data: value };
+    return null;
+  }
+  function unwrapLorebook(value) {
+    if (!isObject(value)) return null;
+    if (value.spec && /lorebook_v3/i.test(String(value.spec)) && isObject(value.data)) return value;
+    if (isObject(value.data) && Array.isArray(value.data.entries)) return { spec: "lorebook_v3", data: value.data };
+    if (Array.isArray(value.entries) || isObject(value.entries) && Object.keys(value.entries).length >= 0) {
+      if (typeof value.name === "string" || value.scan_depth !== void 0 || value.token_budget !== void 0 || value.recursive_scanning !== void 0) return value;
+    }
+    return null;
+  }
+  function unwrapPreset(value) {
+    if (!isObject(value)) return null;
+    if (Array.isArray(value.prompts) || Array.isArray(value.prompt_order)) return value;
+    if (isObject(value.basicPrompts) && Array.isArray(value.entries)) return value;
+    if (value.temperature !== void 0 || value.top_p !== void 0 || value.topP !== void 0 || value.parameters) return value;
+    return null;
+  }
+  function unwrapRegex(value) {
+    if (!isObject(value)) return null;
+    const isRule = (candidate) => isObject(candidate) && typeof candidate.findRegex === "string";
+    if (isRule(value)) return { name: String(value.scriptName || value.name || "").trim(), entries: [value] };
+    if (Array.isArray(value.entries) && value.entries.some(isRule)) return { name: String(value.name || "").trim(), entries: value.entries };
+    return null;
+  }
+  function withFilenameName(type, normalized, filename) {
+    const name = String(filename || "").trim();
+    if (!normalized || !name) return normalized;
+    if (type === "character" && normalized.data && isObject(normalized.data)) return { ...normalized, data: { ...normalized.data, name } };
+    return { ...normalized, name };
+  }
   function jsonFromFile(file) {
-    if (typeof file.text !== "string") return null;
+    if (typeof file?.text !== "string") return null;
     try {
       return JSON.parse(file.text);
     } catch {
@@ -340,19 +479,22 @@
     let offset = 8;
     while (offset + 12 <= bytes.length) {
       const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+      if (offset + 12 + length > bytes.length) break;
       const type = String.fromCharCode(...bytes.slice(offset + 4, offset + 8));
       const data = bytes.slice(offset + 8, offset + 8 + length);
       if (type === "tEXt") {
         const zero = data.indexOf(0);
-        const key = new TextDecoder("latin1").decode(data.slice(0, zero));
-        if (key.toLowerCase() === "chara") {
-          try {
-            const encoded = new TextDecoder("latin1").decode(data.slice(zero + 1));
-            const binary = typeof atob === "function" ? atob(encoded) : Buffer.from(encoded, "base64").toString("binary");
-            const jsonText = typeof atob === "function" ? new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))) : Buffer.from(binary, "binary").toString("utf8");
-            return JSON.parse(jsonText);
-          } catch {
-            return null;
+        if (zero >= 0) {
+          const key = new TextDecoder("latin1").decode(data.slice(0, zero));
+          if (key.toLowerCase() === "chara") {
+            try {
+              const encoded = new TextDecoder("latin1").decode(data.slice(zero + 1));
+              const binary = typeof atob === "function" ? atob(encoded) : Buffer.from(encoded, "base64").toString("binary");
+              const jsonText = typeof atob === "function" ? new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0))) : Buffer.from(binary, "binary").toString("utf8");
+              return JSON.parse(jsonText);
+            } catch {
+              return null;
+            }
           }
         }
       }
@@ -360,49 +502,186 @@
     }
     return null;
   }
-  function isCharacter(value) {
-    if (!value || typeof value !== "object") return false;
-    if (value.spec && value.data?.name) return String(value.spec).startsWith("chara_card");
-    if (value.character?.name || value.character?.data?.name) return true;
-    return Boolean(value.name && value.description && (value.first_mes || value.firstMessage));
-  }
-  function isLorebook(value) {
-    return Boolean(value && typeof value === "object" && value.name && value.entries && !isCharacter(value));
-  }
-  function isPreset(value) {
-    if (!value || typeof value !== "object" || isCharacter(value) || isLorebook(value)) return false;
-    return Boolean(value.temperature !== void 0 || value.top_p !== void 0 || value.topP !== void 0 || value.prompts || value.parameters || /preset/i.test(String(value.name || "")));
-  }
   function classifyResource(file) {
     const path = String(file?.path || "").toLowerCase();
     const extension = path.split(".").pop();
     const parsed = extension === "json" ? jsonFromFile(file) : extension === "png" ? decodePngCharacter(file) : null;
-    if (parsed && isCharacter(parsed)) return { kind: "character", parsed, warnings: [] };
-    if (parsed && isLorebook(parsed)) return { kind: "lorebook", parsed, warnings: [] };
-    if (parsed && isPreset(parsed)) return { kind: "preset", parsed, warnings: [] };
-    if (extension === "json") return { kind: "unknown", parsed: null, warnings: ["\u65E0\u6CD5\u6839\u636E JSON \u7ED3\u6784\u8BC6\u522B\u8D44\u6E90\u7C7B\u578B"] };
-    if (extension === "png") return { kind: "unknown", parsed: null, warnings: ["PNG \u4E2D\u6CA1\u6709\u53EF\u8BC6\u522B\u7684 chara \u89D2\u8272\u5361\u6570\u636E"] };
-    return { kind: "unknown", parsed: null, warnings: ["\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u683C\u5F0F"] };
+    const character = parsed && unwrapCharacter(parsed);
+    if (character) return { kind: "character", parsed, normalized: withFilenameName("character", character, file.name || file.path?.split("/").pop()), warnings: [] };
+    const regex = parsed && unwrapRegex(parsed);
+    if (regex) return { kind: "regex", parsed, normalized: withFilenameName("regex", regex, file.name || file.path?.split("/").pop()), warnings: [] };
+    const lorebook = parsed && unwrapLorebook(parsed);
+    if (lorebook) return { kind: "lorebook", parsed, normalized: withFilenameName("lorebook", lorebook, file.name || file.path?.split("/").pop()), warnings: [] };
+    const preset = parsed && unwrapPreset(parsed);
+    if (preset) return { kind: "preset", parsed, normalized: withFilenameName("preset", preset, file.name || file.path?.split("/").pop()), warnings: [] };
+    if (extension === "json") return { kind: "unknown", parsed: null, normalized: null, warnings: ["\u65E0\u6CD5\u6839\u636E JSON \u7ED3\u6784\u8BC6\u522B\u8D44\u6E90\u7C7B\u578B"] };
+    if (extension === "png") return { kind: "unknown", parsed: null, normalized: null, warnings: ["PNG \u4E2D\u6CA1\u6709\u53EF\u8BC6\u522B\u7684 chara \u89D2\u8272\u5361\u6570\u636E"] };
+    return { kind: "unknown", parsed: null, normalized: null, warnings: ["\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u683C\u5F0F"] };
   }
 
   // src/github/import-service.js
-  function createImportService({ client, adapter }) {
-    return {
-      async importFile({ config, path, conflict = "new" }) {
-        if (conflict === "skip") return { path, skipped: true, reason: "conflict_policy" };
-        const file = await client.readFile(config, path);
-        const classification = classifyResource(file);
-        if (classification.kind === "unknown" || !classification.parsed) {
-          const error = new Error(classification.warnings.join("\uFF1B") || "Unsupported resource");
-          error.code = "unsupported_format";
-          throw error;
+  var IMPORT_LIMITS = {
+    maxFileBytes: 10 * 1024 * 1024,
+    maxTotalBytes: 50 * 1024 * 1024,
+    maxBatch: 50
+  };
+  var CREATE_METHODS = {
+    character: "createCharacter",
+    lorebook: "createLorebook",
+    preset: "createPreset",
+    regex: "createRegex"
+  };
+  function fileName(path) {
+    return normalizePath(path).split("/").pop() || "";
+  }
+  function supportedPath(path) {
+    return /\.(json|png)$/i.test(String(path || ""));
+  }
+  function sourceKey(config, path) {
+    const source = parseRepositorySource(config?.repository || [config?.owner, config?.repo].filter(Boolean).join("/"), config?.branch || "main");
+    const branch = config?.branch || source.branch;
+    const basePath = source.path && !config?.rootPath ? `${source.path}/${normalizePath(path)}` : normalizePath(path);
+    return `${source.owner}/${source.repo}@${branch}:${normalizePath(basePath)}`;
+  }
+  function candidatePayload(candidate, name = "") {
+    const normalized = candidate.normalized || candidate.parsed;
+    if (!name || name === candidate.name || !normalized) return normalized;
+    if (candidate.kind === "character" && normalized.data && typeof normalized.data === "object") return { ...normalized, data: { ...normalized.data, name } };
+    return { ...normalized, name };
+  }
+  function resultId(result) {
+    if (result && typeof result === "object") return result.characterId || result.lorebookId || result.presetId || result.regexId || result.id;
+    return result;
+  }
+  async function readState(storage) {
+    return storage?.loadGlobal ? await storage.loadGlobal() || {} : {};
+  }
+  async function writeHistory(storage, state, history) {
+    if (!storage?.saveGlobal) return;
+    await storage.saveGlobal({ ...state, github: { ...state.github || {}, importHistory: history } });
+  }
+  function createImportService({ client, adapter, storage, limits = IMPORT_LIMITS }) {
+    async function readCandidate(config, entryOrPath) {
+      const entry = typeof entryOrPath === "string" ? { path: entryOrPath, name: fileName(entryOrPath) } : entryOrPath;
+      const path = normalizePath(entry?.path);
+      if (!path || !isSafePath(path)) {
+        const error = new Error("Unsafe repository path");
+        error.code = "github_path";
+        throw error;
+      }
+      if (!supportedPath(path)) {
+        const error = new Error("\u4E0D\u652F\u6301\u7684\u6587\u4EF6\u683C\u5F0F");
+        error.code = "unsupported_format";
+        throw error;
+      }
+      if (Number(entry?.size) > limits.maxFileBytes) {
+        const error = new Error("\u6587\u4EF6\u8D85\u8FC7\u5927\u5C0F\u9650\u5236");
+        error.code = "github_size";
+        throw error;
+      }
+      const file = await client.readFile(config, path);
+      const bytes = Number(file.size) || new TextEncoder().encode(file.text || "").byteLength;
+      if (bytes > limits.maxFileBytes) {
+        const error = new Error("\u6587\u4EF6\u8D85\u8FC7\u5927\u5C0F\u9650\u5236");
+        error.code = "github_size";
+        throw error;
+      }
+      const classification = classifyResource({ ...file, path, name: entry?.name || file.name || fileName(path) });
+      if (classification.kind === "unknown" || !classification.parsed) {
+        const error = new Error(classification.warnings.join("\uFF1B") || "Unsupported resource");
+        error.code = "unsupported_format";
+        throw error;
+      }
+      return {
+        sourceKey: sourceKey(config, path),
+        sourceUrl: file.sourceUrl,
+        kind: classification.kind,
+        name: entry?.name || file.name || fileName(path),
+        path,
+        parsed: classification.parsed,
+        normalized: classification.normalized || classification.parsed,
+        size: bytes,
+        sha: entry?.sha || file.sha || "",
+        warnings: classification.warnings || [],
+        duplicate: { kind: "none" }
+      };
+    }
+    async function findDuplicate(candidate, state) {
+      const history = state.github?.importHistory || {};
+      if (history[candidate.sourceKey]) {
+        return { kind: "source", existingId: history[candidate.sourceKey].id, existingName: history[candidate.sourceKey].name || candidate.name };
+      }
+      if (!adapter?.findResource) return { kind: "none" };
+      const matches = await adapter.findResource(candidate.kind, candidate.name);
+      const match = Array.isArray(matches) ? matches[0] : null;
+      return match ? { kind: "name", existingId: match.id || match.characterId || match.lorebookId || match.presetId || match.regexId, existingName: match.name || candidate.name } : { kind: "none" };
+    }
+    async function createResource(candidate, payload, requestId) {
+      if (adapter?.importResource) return adapter.importResource(candidate.kind, payload, requestId);
+      const method = CREATE_METHODS[candidate.kind];
+      if (!method || typeof adapter?.[method] !== "function") throw new Error(`Tavo ${candidate.kind} import API is unavailable`);
+      return adapter[method](payload, requestId);
+    }
+    async function updateResource(candidate, payload) {
+      if (!adapter?.updateResource) throw new Error("\u91CD\u590D\u8D44\u6E90\u6682\u4E0D\u652F\u6301\u66F4\u65B0");
+      return adapter.updateResource(candidate.kind, payload, candidate.duplicate.existingId);
+    }
+    async function prepareFiles({ config, entries = [] }) {
+      if (entries.length > limits.maxBatch) throw new Error(`\u6700\u591A\u5BFC\u5165 ${limits.maxBatch} \u4E2A\u6587\u4EF6`);
+      const state = await readState(storage);
+      const candidates = [];
+      let totalBytes = 0;
+      for (const entry of entries) {
+        if (entry?.type && entry.type !== "file" && entry.type !== "blob") continue;
+        const candidate = await readCandidate(config, entry);
+        totalBytes += candidate.size;
+        if (totalBytes > limits.maxTotalBytes) throw new Error("\u6279\u91CF\u6587\u4EF6\u8D85\u8FC7\u603B\u5927\u5C0F\u9650\u5236");
+        candidate.duplicate = await findDuplicate(candidate, state);
+        candidates.push(candidate);
+      }
+      return candidates;
+    }
+    async function importCandidates(candidates = [], decisions = {}) {
+      const state = await readState(storage);
+      const history = { ...state.github?.importHistory || {} };
+      const results = [];
+      for (const candidate of candidates) {
+        const choice = typeof decisions[candidate.sourceKey] === "string" ? { decision: decisions[candidate.sourceKey] } : decisions[candidate.sourceKey] || {};
+        const decision = choice.decision || (candidate.duplicate?.kind === "none" ? "create" : "skip");
+        try {
+          if (decision === "skip") {
+            results.push({ status: "skipped", candidate });
+            continue;
+          }
+          const payload = candidatePayload(candidate, decision === "create" ? choice.newName : "");
+          const result = decision === "update" ? await updateResource(candidate, payload) : await createResource(candidate, payload, `github:${candidate.path}:${choice.requestConflict || decision}`);
+          if (result === null) {
+            results.push({ status: "cancelled", candidate });
+            continue;
+          }
+          const id = resultId(result);
+          history[candidate.sourceKey] = { id, kind: candidate.kind, name: choice.newName || candidate.name, sha: candidate.sha, importedAt: (/* @__PURE__ */ new Date()).toISOString() };
+          results.push({ status: decision === "update" ? "updated" : "created", id, resource: result, candidate });
+        } catch (error) {
+          results.push({ status: "failed", candidate, error });
         }
-        const requestId = `github:${path}:${conflict}`;
-        let resource;
-        if (classification.kind === "character") resource = await adapter.createCharacter(classification.parsed, requestId);
-        else if (classification.kind === "lorebook") resource = await adapter.createLorebook(classification.parsed, requestId);
-        else resource = await adapter.createPreset(classification.parsed, requestId);
-        return { path, kind: classification.kind, resource, conflict };
+      }
+      await writeHistory(storage, state, history);
+      return results;
+    }
+    return {
+      client,
+      adapter,
+      isSupportedFile: supportedPath,
+      readCandidate,
+      prepareFiles,
+      inspectFiles: prepareFiles,
+      importCandidates,
+      async importFile({ config, path, conflict = "new" }) {
+        const [candidate] = await prepareFiles({ config, entries: [{ path, name: fileName(path), type: "file" }] });
+        const decision = conflict === "skip" ? "skip" : conflict === "update" ? "update" : "create";
+        const [result] = await importCandidates([candidate], { [candidate.sourceKey]: { decision, requestConflict: conflict } });
+        return { path, kind: candidate.kind, resource: result?.resource, conflict, status: result?.status, id: result?.id };
       }
     };
   }
@@ -1048,46 +1327,130 @@ ${transcript}`
       const branch = el("input", { className: "github-branch", value: config.branch || "main", placeholder: "main" });
       const token = el("input", { className: "github-token", type: "password", value: config.token || "", placeholder: "\u53EF\u9009 token" });
       const fileList = el("div", { className: "phone-section" });
-      let repositoryFiles = [];
+      const status = el("p", { className: "phone-muted", "data-action": "github-status" });
+      const preview = el("pre", { className: "phone-card", "data-action": "github-preview", hidden: "" });
+      const conflictList = el("div", { className: "phone-section" });
+      const conflictCard = el("div", { className: "phone-card phone-section", "data-action": "github-conflicts", hidden: "" });
       let repositoryPath = "";
+      let repositoryEntries = [];
+      let fallbackFiles = [];
+      let selectedPaths = /* @__PURE__ */ new Set();
+      let conflicts = [];
       let activeConfig = state.github;
       const persistGithubConfig = async () => {
-        const nextConfig = { repository: repository.value.trim(), branch: branch.value.trim() || "main", token: token.value };
+        const parsed = parseRepositorySource(repository.value.trim(), branch.value.trim() || "main");
+        const nextConfig = { repository: repository.value.trim(), branch: branch.value.trim() || parsed.branch || "main", token: token.value, importHistory: state.github.importHistory || {} };
         state.github = nextConfig;
         await save();
         return nextConfig;
       };
-      const renderDirectory = () => {
-        const prefix = repositoryPath ? `${repositoryPath}/` : "";
+      const isSupported = (entry) => entry?.type === "file" || entry?.type === "blob" ? importService?.isSupportedFile ? importService.isSupportedFile(entry.path) : /\.(json|png)$/i.test(entry.path || "") : false;
+      const entriesForFallback = (allFiles, path) => {
+        const prefix = path ? `${path}/` : "";
         const entries = /* @__PURE__ */ new Map();
-        repositoryFiles.forEach((file) => {
+        allFiles.forEach((file) => {
           if (!file?.path || !file.path.startsWith(prefix)) return;
           const relative = file.path.slice(prefix.length);
           if (!relative) return;
           const parts = relative.split("/");
-          const name = parts[0];
-          if (parts.length > 1) entries.set(`directory:${name}`, { kind: "directory", name, path: `${prefix}${name}` });
-          else entries.set(`file:${file.path}`, { kind: "file", name, path: file.path });
+          if (parts.length > 1) entries.set(`dir:${parts[0]}`, { name: parts[0], path: `${prefix}${parts[0]}`, type: "dir" });
+          else entries.set(`file:${file.path}`, { name: parts[0], path: file.path, type: "file", size: file.size || 0, sha: file.sha || "" });
         });
+        return [...entries.values()];
+      };
+      const updateStatus = (message, warning = false) => {
+        status.textContent = message;
+        status.classList.toggle("phone-muted", !warning);
+      };
+      const renderDirectory = () => {
+        const entries = repositoryEntries;
         const rows = [];
-        if (repositoryPath) rows.push(el("button", { className: "phone-button", "data-action": "github-up", text: "\u2039 \u4E0A\u4E00\u7EA7\u76EE\u5F55", onClick: () => {
-          repositoryPath = repositoryPath.split("/").slice(0, -1).join("/");
+        if (repositoryPath) rows.push(el("button", { className: "phone-button", "data-action": "github-up", text: "\u2039 \u4E0A\u4E00\u7EA7\u76EE\u5F55", onClick: () => openDirectory(repositoryPath.split("/").slice(0, -1).join("/")) }));
+        const supportedEntries = entries.filter(isSupported);
+        const selectAll = el("button", { className: "phone-button", "data-action": "github-select-all", text: supportedEntries.length && supportedEntries.every((entry) => selectedPaths.has(entry.path)) ? "\u53D6\u6D88\u5168\u9009" : "\u5168\u9009\u53EF\u5BFC\u5165\u6587\u4EF6", onClick: () => {
+          const allSelected = supportedEntries.length && supportedEntries.every((entry) => selectedPaths.has(entry.path));
+          supportedEntries.forEach((entry) => allSelected ? selectedPaths.delete(entry.path) : selectedPaths.add(entry.path));
           renderDirectory();
-        } }));
-        const sorted = [...entries.values()].sort((a, b) => Number(b.kind === "directory") - Number(a.kind === "directory") || a.name.localeCompare(b.name));
-        rows.push(...sorted.map((entry) => entry.kind === "directory" ? el("button", { className: "phone-app-card", "data-action": "github-directory", onClick: () => {
-          repositoryPath = entry.path;
-          renderDirectory();
-        } }, [el("span", { text: `\u{1F4C1} ${entry.name}` }), el("small", { text: "\u6253\u5F00\u76EE\u5F55" })]) : el("div", { className: "phone-card phone-row" }, [el("span", { text: `\u{1F4C4} ${entry.name}` }), el("button", { className: "phone-button", text: "\u5BFC\u5165", onClick: async () => {
-          try {
-            await importService.importFile({ config: activeConfig, path: entry.path, conflict: "new" });
-            await notify("\u5BFC\u5165\u6210\u529F");
-          } catch (error) {
-            await notify(error.message || "\u5BFC\u5165\u5931\u8D25");
-          }
-        } })])));
-        if (!rows.length) rows.push(el("p", { className: "phone-muted", text: repositoryFiles.length ? "\u5F53\u524D\u76EE\u5F55\u6CA1\u6709\u6587\u4EF6" : "\u8BF7\u5148\u52A0\u8F7D\u4ED3\u5E93\u76EE\u5F55" }));
+        } });
+        rows.push(el("div", { className: "phone-row" }, [el("span", { text: repositoryPath ? `\u76EE\u5F55\uFF1A/${repositoryPath}` : "\u4ED3\u5E93\u6839\u76EE\u5F55" }), selectAll]));
+        const sorted = [...entries].sort((a, b) => Number(b.type === "dir" || b.type === "directory") - Number(a.type === "dir" || a.type === "directory") || String(a.name).localeCompare(String(b.name)));
+        rows.push(...sorted.map((entry) => entry.type === "dir" || entry.type === "directory" ? el("button", { className: "phone-app-card", "data-action": "github-directory", onClick: () => openDirectory(entry.path) }, [el("span", { text: `\u{1F4C1} ${entry.name}` }), el("small", { text: "\u6253\u5F00\u76EE\u5F55" })]) : el("div", { className: "phone-card phone-row" }, [el("label", { className: "phone-row" }, [el("input", { type: "checkbox", "data-action": "github-select", disabled: !isSupported(entry), checked: selectedPaths.has(entry.path) ? "checked" : void 0, onChange: (event) => {
+          if (event.target.checked) selectedPaths.add(entry.path);
+          else selectedPaths.delete(entry.path);
+        } }), el("span", { text: `\u{1F4C4} ${entry.name}` })]), el("button", { className: "phone-button", "data-action": "github-preview-file", text: "\u9884\u89C8", disabled: !isSupported(entry), onClick: () => previewEntry(entry) })])));
+        if (!entries.length) rows.push(el("p", { className: "phone-muted", text: "\u5F53\u524D\u76EE\u5F55\u6CA1\u6709\u6587\u4EF6\u6216\u6587\u4EF6\u5939" }));
         fileList.replaceChildren(...rows);
+      };
+      const previewEntry = async (entry) => {
+        if (!importService?.readCandidate) return;
+        preview.hidden = false;
+        preview.textContent = "\u6B63\u5728\u8BFB\u53D6\u8D44\u6E90\u2026";
+        try {
+          const candidate = await importService.readCandidate(activeConfig, entry);
+          preview.textContent = JSON.stringify({ kind: candidate.kind, name: candidate.name, source: candidate.sourceKey, data: candidate.normalized }, null, 2);
+        } catch (error) {
+          preview.textContent = error.message || "\u9884\u89C8\u5931\u8D25";
+        }
+      };
+      const renderConflicts = () => {
+        conflictList.replaceChildren(...conflicts.map((candidate) => {
+          const select = el("select", { "data-action": "github-conflict-decision" }, [el("option", { value: "update", text: "\u66F4\u65B0\u5DF2\u6709\u8D44\u6E90" }), el("option", { value: "create", text: "\u65B0\u5EFA\u526F\u672C" }), el("option", { value: "skip", text: "\u8DF3\u8FC7" })]);
+          const rename = el("input", { className: "github-rename", value: candidate.name, placeholder: "\u65B0\u540D\u79F0\uFF08\u53EF\u9009\uFF09", hidden: "hidden" });
+          select.addEventListener("change", () => {
+            rename.hidden = select.value !== "create";
+          });
+          return el("div", { className: "phone-card" }, [el("div", { className: "phone-row" }, [el("strong", { text: candidate.name }), el("span", { className: "phone-pill", text: candidate.kind })]), el("p", { className: "phone-muted", text: `\u53D1\u73B0\u91CD\u590D\uFF1A${candidate.duplicate.existingName || candidate.name}` }), el("div", { className: "phone-row" }, [select, rename])]);
+        }));
+        conflictCard.hidden = !conflicts.length;
+      };
+      const openDirectory = async (path) => {
+        repositoryPath = normalizePath(path);
+        if (importService?.client?.listDirectory) {
+          try {
+            repositoryEntries = await importService.client.listDirectory(activeConfig, repositoryPath);
+            renderDirectory();
+          } catch (error) {
+            updateStatus(error.message || "\u76EE\u5F55\u52A0\u8F7D\u5931\u8D25", true);
+          }
+        } else {
+          repositoryEntries = entriesForFallback(fallbackFiles, repositoryPath);
+          renderDirectory();
+        }
+      };
+      const importSelected = async () => {
+        const selected = repositoryEntries.filter((entry) => selectedPaths.has(entry.path) && isSupported(entry));
+        if (!selected.length) return updateStatus("\u8BF7\u5148\u52FE\u9009\u53EF\u5BFC\u5165\u7684\u6587\u4EF6", true);
+        if (!importService?.prepareFiles || !importService?.importCandidates) return updateStatus("\u6279\u91CF\u5BFC\u5165\u670D\u52A1\u6682\u4E0D\u53EF\u7528", true);
+        updateStatus("\u6B63\u5728\u5206\u6790\u8D44\u6E90\u2026");
+        try {
+          const candidates = await importService.prepareFiles({ config: activeConfig, entries: selected });
+          conflicts = candidates.filter((candidate) => candidate.duplicate?.kind && candidate.duplicate.kind !== "none");
+          const clean = candidates.filter((candidate) => !conflicts.includes(candidate));
+          const results = await importService.importCandidates(clean);
+          selectedPaths = new Set([...selectedPaths].filter((path) => !selected.some((entry) => entry.path === path)));
+          renderConflicts();
+          const created = results.filter((result) => result.status === "created").length;
+          const failed = results.filter((result) => result.status === "failed").length;
+          updateStatus(`${created} \u4E2A\u8D44\u6E90\u5DF2\u5BFC\u5165${conflicts.length ? `\uFF0C${conflicts.length} \u4E2A\u91CD\u590D\u5F85\u5904\u7406` : ""}${failed ? `\uFF0C${failed} \u4E2A\u5931\u8D25` : ""}`, failed > 0);
+          await openDirectory(repositoryPath);
+        } catch (error) {
+          updateStatus(error.message || "\u6279\u91CF\u5BFC\u5165\u5931\u8D25", true);
+        }
+      };
+      const confirmConflicts = async () => {
+        if (!conflicts.length || !importService?.importCandidates) return;
+        const decisions = {};
+        [...conflictList.children].forEach((row, index) => {
+          const candidate = conflicts[index];
+          const select = row.querySelector("select");
+          const rename = row.querySelector(".github-rename");
+          decisions[candidate.sourceKey] = { decision: select.value, newName: rename?.value?.trim() || "" };
+        });
+        const results = await importService.importCandidates(conflicts, decisions);
+        conflicts = [];
+        renderConflicts();
+        updateStatus(`\u91CD\u590D\u8D44\u6E90\u5904\u7406\u5B8C\u6210\uFF1A${results.filter((result) => ["created", "updated"].includes(result.status)).length} \u4E2A\u6210\u529F`);
+        await openDirectory(repositoryPath);
       };
       const browse = el("button", { className: "phone-button primary", "data-action": "github-load", text: "\u52A0\u8F7D\u4ED3\u5E93\u76EE\u5F55", onClick: async () => {
         const currentConfig = await persistGithubConfig();
@@ -1095,22 +1458,36 @@ ${transcript}`
         browse.disabled = true;
         try {
           activeConfig = currentConfig;
-          repositoryFiles = await importService.client.listFiles(currentConfig);
+          selectedPaths = /* @__PURE__ */ new Set();
           repositoryPath = "";
-          renderDirectory();
+          if (importService.client.listDirectory) {
+            repositoryEntries = await importService.client.listDirectory(currentConfig, "");
+            renderDirectory();
+          } else {
+            fallbackFiles = await importService.client.listFiles(currentConfig);
+            repositoryEntries = entriesForFallback(fallbackFiles, "");
+            renderDirectory();
+          }
+          updateStatus(`\u5DF2\u52A0\u8F7D ${repositoryEntries.length} \u9879\uFF0C\u8BF7\u8FDB\u5165\u76EE\u5F55\u5E76\u52FE\u9009\u8981\u5BFC\u5165\u7684\u6587\u4EF6`);
         } catch (error) {
           await notify(error.message || "GitHub \u8FDE\u63A5\u5931\u8D25");
         } finally {
           browse.disabled = false;
         }
       } });
+      const importButton = el("button", { className: "phone-button primary", "data-action": "github-import-selected", text: "\u5BFC\u5165\u9009\u4E2D\u8D44\u6E90", onClick: importSelected });
+      const confirmButton = el("button", { className: "phone-button primary", "data-action": "github-confirm-conflicts", text: "\u786E\u8BA4\u5904\u7406\u91CD\u590D\u8D44\u6E90", onClick: confirmConflicts });
+      conflictCard.append(el("strong", { text: "\u91CD\u590D\u8D44\u6E90\u5904\u7406" }), el("p", { className: "phone-muted", text: "\u9009\u62E9\u66F4\u65B0\u5DF2\u6709\u8D44\u6E90\u3001\u65B0\u5EFA\u526F\u672C\u6216\u8DF3\u8FC7\u3002" }), conflictList, confirmButton);
       content.replaceChildren(el("div", { className: "phone-section" }, [
         el("div", { className: "phone-card phone-section" }, [el("strong", { text: "GitHub \u4ED3\u5E93" }), ...[
           ["repository", repository, "\u4ED3\u5E93"],
           ["branch", branch, "\u5206\u652F"],
           ["token", token, "Token"]
-        ].map(([, input, label]) => el("div", { className: "phone-field" }, [el("label", { text: label }), input])), el("div", { className: "phone-row" }, [browse])]),
-        fileList
+        ].map(([, input, label]) => el("div", { className: "phone-field" }, [el("label", { text: label }), input])), el("div", { className: "phone-row" }, [browse, importButton])]),
+        status,
+        fileList,
+        conflictCard,
+        preview
       ]));
       renderDirectory();
       nav.replaceChildren();

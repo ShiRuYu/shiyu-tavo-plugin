@@ -1,6 +1,6 @@
 import { DEFAULT_PHONE_STATE, createStorage } from '../core/storage.js';
 import { createTavoAdapter } from '../tavo/adapter.js';
-import { GitHubClient } from '../github/client.js';
+import { GitHubClient, parseRepositorySource, normalizePath } from '../github/client.js';
 import { createImportService } from '../github/import-service.js';
 import { createIdentityService } from '../wechat/identity-store.js';
 import { createThreadService } from '../wechat/thread-store.js';
@@ -247,35 +247,112 @@ export function mountPhone(root, options = {}) {
     const branch = el('input', { className: 'github-branch', value: config.branch || 'main', placeholder: 'main' });
     const token = el('input', { className: 'github-token', type: 'password', value: config.token || '', placeholder: '可选 token' });
     const fileList = el('div', { className: 'phone-section' });
-    let repositoryFiles = [];
+    const status = el('p', { className: 'phone-muted', 'data-action': 'github-status' });
+    const preview = el('pre', { className: 'phone-card', 'data-action': 'github-preview', hidden: '' });
+    const conflictList = el('div', { className: 'phone-section' });
+    const conflictCard = el('div', { className: 'phone-card phone-section', 'data-action': 'github-conflicts', hidden: '' });
     let repositoryPath = '';
+    let repositoryEntries = [];
+    let fallbackFiles = [];
+    let selectedPaths = new Set();
+    let conflicts = [];
     let activeConfig = state.github;
     const persistGithubConfig = async () => {
-      const nextConfig = { repository: repository.value.trim(), branch: branch.value.trim() || 'main', token: token.value };
+      const parsed = parseRepositorySource(repository.value.trim(), branch.value.trim() || 'main');
+      const nextConfig = { repository: repository.value.trim(), branch: branch.value.trim() || parsed.branch || 'main', token: token.value, importHistory: state.github.importHistory || {} };
       state.github = nextConfig;
       await save();
       return nextConfig;
     };
-    const renderDirectory = () => {
-      const prefix = repositoryPath ? `${repositoryPath}/` : '';
+    const isSupported = (entry) => entry?.type === 'file' || entry?.type === 'blob'
+      ? (importService?.isSupportedFile ? importService.isSupportedFile(entry.path) : /\.(json|png)$/i.test(entry.path || ''))
+      : false;
+    const entriesForFallback = (allFiles, path) => {
+      const prefix = path ? `${path}/` : '';
       const entries = new Map();
-      repositoryFiles.forEach((file) => {
+      allFiles.forEach((file) => {
         if (!file?.path || !file.path.startsWith(prefix)) return;
         const relative = file.path.slice(prefix.length);
         if (!relative) return;
         const parts = relative.split('/');
-        const name = parts[0];
-        if (parts.length > 1) entries.set(`directory:${name}`, { kind: 'directory', name, path: `${prefix}${name}` });
-        else entries.set(`file:${file.path}`, { kind: 'file', name, path: file.path });
+        if (parts.length > 1) entries.set(`dir:${parts[0]}`, { name: parts[0], path: `${prefix}${parts[0]}`, type: 'dir' });
+        else entries.set(`file:${file.path}`, { name: parts[0], path: file.path, type: 'file', size: file.size || 0, sha: file.sha || '' });
       });
+      return [...entries.values()];
+    };
+    const updateStatus = (message, warning = false) => { status.textContent = message; status.classList.toggle('phone-muted', !warning); };
+    const renderDirectory = () => {
+      const entries = repositoryEntries;
       const rows = [];
-      if (repositoryPath) rows.push(el('button', { className: 'phone-button', 'data-action': 'github-up', text: '‹ 上一级目录', onClick: () => { repositoryPath = repositoryPath.split('/').slice(0, -1).join('/'); renderDirectory(); } }));
-      const sorted = [...entries.values()].sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name));
-      rows.push(...sorted.map((entry) => entry.kind === 'directory'
-        ? el('button', { className: 'phone-app-card', 'data-action': 'github-directory', onClick: () => { repositoryPath = entry.path; renderDirectory(); } }, [el('span', { text: `📁 ${entry.name}` }), el('small', { text: '打开目录' })])
-        : el('div', { className: 'phone-card phone-row' }, [el('span', { text: `📄 ${entry.name}` }), el('button', { className: 'phone-button', text: '导入', onClick: async () => { try { await importService.importFile({ config: activeConfig, path: entry.path, conflict: 'new' }); await notify('导入成功'); } catch (error) { await notify(error.message || '导入失败'); } } })])));
-      if (!rows.length) rows.push(el('p', { className: 'phone-muted', text: repositoryFiles.length ? '当前目录没有文件' : '请先加载仓库目录' }));
+      if (repositoryPath) rows.push(el('button', { className: 'phone-button', 'data-action': 'github-up', text: '‹ 上一级目录', onClick: () => openDirectory(repositoryPath.split('/').slice(0, -1).join('/')) }));
+      const supportedEntries = entries.filter(isSupported);
+      const selectAll = el('button', { className: 'phone-button', 'data-action': 'github-select-all', text: supportedEntries.length && supportedEntries.every((entry) => selectedPaths.has(entry.path)) ? '取消全选' : '全选可导入文件', onClick: () => {
+        const allSelected = supportedEntries.length && supportedEntries.every((entry) => selectedPaths.has(entry.path));
+        supportedEntries.forEach((entry) => allSelected ? selectedPaths.delete(entry.path) : selectedPaths.add(entry.path));
+        renderDirectory();
+      } });
+      rows.push(el('div', { className: 'phone-row' }, [el('span', { text: repositoryPath ? `目录：/${repositoryPath}` : '仓库根目录' }), selectAll]));
+      const sorted = [...entries].sort((a, b) => Number((b.type === 'dir' || b.type === 'directory')) - Number((a.type === 'dir' || a.type === 'directory')) || String(a.name).localeCompare(String(b.name)));
+      rows.push(...sorted.map((entry) => (entry.type === 'dir' || entry.type === 'directory')
+        ? el('button', { className: 'phone-app-card', 'data-action': 'github-directory', onClick: () => openDirectory(entry.path) }, [el('span', { text: `📁 ${entry.name}` }), el('small', { text: '打开目录' })])
+        : el('div', { className: 'phone-card phone-row' }, [el('label', { className: 'phone-row' }, [el('input', { type: 'checkbox', 'data-action': 'github-select', disabled: !isSupported(entry), checked: selectedPaths.has(entry.path) ? 'checked' : undefined, onChange: (event) => { if (event.target.checked) selectedPaths.add(entry.path); else selectedPaths.delete(entry.path); } }), el('span', { text: `📄 ${entry.name}` })]), el('button', { className: 'phone-button', 'data-action': 'github-preview-file', text: '预览', disabled: !isSupported(entry), onClick: () => previewEntry(entry) })])));
+      if (!entries.length) rows.push(el('p', { className: 'phone-muted', text: '当前目录没有文件或文件夹' }));
       fileList.replaceChildren(...rows);
+    };
+    const previewEntry = async (entry) => {
+      if (!importService?.readCandidate) return;
+      preview.hidden = false;
+      preview.textContent = '正在读取资源…';
+      try {
+        const candidate = await importService.readCandidate(activeConfig, entry);
+        preview.textContent = JSON.stringify({ kind: candidate.kind, name: candidate.name, source: candidate.sourceKey, data: candidate.normalized }, null, 2);
+      } catch (error) { preview.textContent = error.message || '预览失败'; }
+    };
+    const renderConflicts = () => {
+      conflictList.replaceChildren(...conflicts.map((candidate) => {
+        const select = el('select', { 'data-action': 'github-conflict-decision' }, [el('option', { value: 'update', text: '更新已有资源' }), el('option', { value: 'create', text: '新建副本' }), el('option', { value: 'skip', text: '跳过' })]);
+        const rename = el('input', { className: 'github-rename', value: candidate.name, placeholder: '新名称（可选）', hidden: 'hidden' });
+        select.addEventListener('change', () => { rename.hidden = select.value !== 'create'; });
+        return el('div', { className: 'phone-card' }, [el('div', { className: 'phone-row' }, [el('strong', { text: candidate.name }), el('span', { className: 'phone-pill', text: candidate.kind })]), el('p', { className: 'phone-muted', text: `发现重复：${candidate.duplicate.existingName || candidate.name}` }), el('div', { className: 'phone-row' }, [select, rename])]);
+      }));
+      conflictCard.hidden = !conflicts.length;
+    };
+    const openDirectory = async (path) => {
+      repositoryPath = normalizePath(path);
+      if (importService?.client?.listDirectory) {
+        try { repositoryEntries = await importService.client.listDirectory(activeConfig, repositoryPath); renderDirectory(); } catch (error) { updateStatus(error.message || '目录加载失败', true); }
+      } else {
+        repositoryEntries = entriesForFallback(fallbackFiles, repositoryPath);
+        renderDirectory();
+      }
+    };
+    const importSelected = async () => {
+      const selected = repositoryEntries.filter((entry) => selectedPaths.has(entry.path) && isSupported(entry));
+      if (!selected.length) return updateStatus('请先勾选可导入的文件', true);
+      if (!importService?.prepareFiles || !importService?.importCandidates) return updateStatus('批量导入服务暂不可用', true);
+      updateStatus('正在分析资源…');
+      try {
+        const candidates = await importService.prepareFiles({ config: activeConfig, entries: selected });
+        conflicts = candidates.filter((candidate) => candidate.duplicate?.kind && candidate.duplicate.kind !== 'none');
+        const clean = candidates.filter((candidate) => !conflicts.includes(candidate));
+        const results = await importService.importCandidates(clean);
+        selectedPaths = new Set([...selectedPaths].filter((path) => !selected.some((entry) => entry.path === path)));
+        renderConflicts();
+        const created = results.filter((result) => result.status === 'created').length;
+        const failed = results.filter((result) => result.status === 'failed').length;
+        updateStatus(`${created} 个资源已导入${conflicts.length ? `，${conflicts.length} 个重复待处理` : ''}${failed ? `，${failed} 个失败` : ''}`, failed > 0);
+        await openDirectory(repositoryPath);
+      } catch (error) { updateStatus(error.message || '批量导入失败', true); }
+    };
+    const confirmConflicts = async () => {
+      if (!conflicts.length || !importService?.importCandidates) return;
+      const decisions = {};
+      [...conflictList.children].forEach((row, index) => { const candidate = conflicts[index]; const select = row.querySelector('select'); const rename = row.querySelector('.github-rename'); decisions[candidate.sourceKey] = { decision: select.value, newName: rename?.value?.trim() || '' }; });
+      const results = await importService.importCandidates(conflicts, decisions);
+      conflicts = [];
+      renderConflicts();
+      updateStatus(`重复资源处理完成：${results.filter((result) => ['created', 'updated'].includes(result.status)).length} 个成功`);
+      await openDirectory(repositoryPath);
     };
     const browse = el('button', { className: 'phone-button primary', 'data-action': 'github-load', text: '加载仓库目录', onClick: async () => {
       const currentConfig = await persistGithubConfig();
@@ -283,17 +360,31 @@ export function mountPhone(root, options = {}) {
       browse.disabled = true;
       try {
         activeConfig = currentConfig;
-        repositoryFiles = await importService.client.listFiles(currentConfig);
+        selectedPaths = new Set();
         repositoryPath = '';
-        renderDirectory();
+        if (importService.client.listDirectory) {
+          repositoryEntries = await importService.client.listDirectory(currentConfig, '');
+          renderDirectory();
+        } else {
+          fallbackFiles = await importService.client.listFiles(currentConfig);
+          repositoryEntries = entriesForFallback(fallbackFiles, '');
+          renderDirectory();
+        }
+        updateStatus(`已加载 ${repositoryEntries.length} 项，请进入目录并勾选要导入的文件`);
       } catch (error) { await notify(error.message || 'GitHub 连接失败'); }
       finally { browse.disabled = false; }
     } });
+    const importButton = el('button', { className: 'phone-button primary', 'data-action': 'github-import-selected', text: '导入选中资源', onClick: importSelected });
+    const confirmButton = el('button', { className: 'phone-button primary', 'data-action': 'github-confirm-conflicts', text: '确认处理重复资源', onClick: confirmConflicts });
+    conflictCard.append(el('strong', { text: '重复资源处理' }), el('p', { className: 'phone-muted', text: '选择更新已有资源、新建副本或跳过。' }), conflictList, confirmButton);
     content.replaceChildren(el('div', { className: 'phone-section' }, [
       el('div', { className: 'phone-card phone-section' }, [el('strong', { text: 'GitHub 仓库' }), ...[
         ['repository', repository, '仓库'], ['branch', branch, '分支'], ['token', token, 'Token'],
-      ].map(([, input, label]) => el('div', { className: 'phone-field' }, [el('label', { text: label }), input])), el('div', { className: 'phone-row' }, [browse])]),
+      ].map(([, input, label]) => el('div', { className: 'phone-field' }, [el('label', { text: label }), input])), el('div', { className: 'phone-row' }, [browse, importButton])]),
+      status,
       fileList,
+      conflictCard,
+      preview,
     ]));
     renderDirectory();
     nav.replaceChildren();

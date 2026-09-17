@@ -27,3 +27,13 @@ test('extracts an embedded chara JSON payload from a PNG tEXt chunk', () => {
   assert.equal(result.kind, 'character');
   assert.equal(result.parsed.name, 'PNG角色');
 });
+
+test('classifies reference importer formats and normalizes their wrappers', () => {
+  assert.equal(classifyResource({ path: 'regex.json', text: JSON.stringify({ findRegex: 'foo', replaceString: 'bar' }) }).kind, 'regex');
+  const worldbook = classifyResource({ path: 'world.json', text: JSON.stringify({ spec: 'lorebook_v3', data: { entries: [] } }) });
+  assert.equal(worldbook.kind, 'lorebook');
+  assert.deepEqual(worldbook.normalized.data.entries, []);
+  const character = classifyResource({ path: 'plain.json', text: JSON.stringify({ name: 'Plain', first_mes: 'hello' }) });
+  assert.equal(character.kind, 'character');
+  assert.equal(character.normalized.data.name, 'plain.json');
+});
