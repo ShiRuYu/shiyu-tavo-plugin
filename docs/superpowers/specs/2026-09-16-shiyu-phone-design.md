@@ -23,11 +23,11 @@
 
 ### 角色管理
 
-按“用户消息 + 角色回复”统计完整回合。达到配置阈值后分析最近剧情，按已知角色和候选去重；候选必须经过编辑和确认才写入角色库。
+按“用户消息 + 角色回复”统计完整回合。达到配置阈值后分析最近剧情，也支持手动检测当前剧情或根据用户描述生成候选；按已知角色和候选去重，候选必须经过编辑和确认才写入角色库。
 
 ### 内容导入
 
-配置 owner/repo/branch/path/token，调用 GitHub REST API 浏览文件。支持 Tavo/CCv3、CCv2、SillyTavern World Info 和 PNG 角色卡；导入提供新建、覆盖、跳过策略。
+配置仓库（`owner/repo` 或 GitHub URL）、branch/token，调用 GitHub REST API 加载树并按目录浏览文件。支持 Tavo/CCv3、CCv2、SillyTavern World Info 和 PNG 角色卡；导入提供新建、覆盖、跳过策略。
 
 ### 微信
 

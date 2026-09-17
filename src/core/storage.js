@@ -14,7 +14,7 @@ export const DEFAULT_PHONE_STATE = {
   candidates: [],
   threads: {},
   moments: [],
-  github: { owner: '', repo: '', branch: 'main', rootPath: '', token: '' },
+  github: { repository: '', branch: 'main', token: '' },
   detection: { enabled: true, roundThreshold: 5, recentWindowRounds: 5 },
 };
 
@@ -32,7 +32,11 @@ function mergeDefaults(value) {
       : clone(DEFAULT_PHONE_STATE.identities),
     threads: input.threads && typeof input.threads === 'object' ? input.threads : {},
     moments: Array.isArray(input.moments) ? input.moments : [],
-    github: { ...clone(DEFAULT_PHONE_STATE.github), ...(input.github || {}) },
+    github: {
+      ...clone(DEFAULT_PHONE_STATE.github),
+      ...(input.github || {}),
+      repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join('/'),
+    },
     detection: { ...clone(DEFAULT_PHONE_STATE.detection), ...(input.detection || {}) },
   };
 }

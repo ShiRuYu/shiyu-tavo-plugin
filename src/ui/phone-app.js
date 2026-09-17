@@ -6,6 +6,8 @@ import { createIdentityService } from '../wechat/identity-store.js';
 import { createThreadService } from '../wechat/thread-store.js';
 import { createMomentsService } from '../wechat/moments-store.js';
 import { createRoleDialogueService } from '../runtime/role-dialogue.js';
+import { createManualDetectionService } from '../detection/manual-detection.js';
+import { parseDetectorResponse } from '../detection/role-detector.js';
 
 const APP_LABELS = [
   { id: 'characters', key: 'apps.characters', fallback: '角色管理', hint: '检测剧情中的新角色' },
@@ -34,7 +36,11 @@ function mergeState(input = {}) {
     candidates: Array.isArray(input.candidates) ? input.candidates : [],
     threads: input.threads && typeof input.threads === 'object' ? input.threads : {},
     moments: Array.isArray(input.moments) ? input.moments : [],
-    github: { ...DEFAULT_PHONE_STATE.github, ...(input.github || {}) },
+    github: {
+      ...DEFAULT_PHONE_STATE.github,
+      ...(input.github || {}),
+      repository: input.github?.repository || [input.github?.owner, input.github?.repo].filter(Boolean).join('/'),
+    },
     detection: { ...DEFAULT_PHONE_STATE.detection, ...(input.detection || {}) },
   };
 }
@@ -52,6 +58,7 @@ export function mountPhone(root, options = {}) {
   const threadService = options.threadService || (storage ? createThreadService({ storage }) : null);
   const momentsService = options.momentsService || (storage ? createMomentsService({ storage }) : null);
   const importService = options.importService || (adapter ? createImportService({ client: new GitHubClient(), adapter }) : null);
+  const manualDetection = options.manualDetection || (storage && adapter ? createManualDetectionService({ adapter, storage }) : null);
   const roleDialogue = adapter && threadService ? createRoleDialogueService({ adapter, threadService }) : null;
   const localize = (key, fallback) => {
     try { return tavoFacade?.plugin?.i18n?.t?.(key) || fallback; } catch { return fallback; }
@@ -68,10 +75,11 @@ export function mountPhone(root, options = {}) {
   });
   const shell = el('section', { className: 'phone-shell', hidden: '' });
   const topbar = el('header', { className: 'phone-topbar' });
+  const homeBack = el('button', { className: 'phone-home-button', 'data-action': 'phone-home', 'aria-label': localize('common.back', '返回手机首页'), text: '‹', hidden: '', onClick: () => { page = 'home'; wechatTab = 'messages'; activeThreadId = null; render(); } });
   const identity = el('span', { className: 'phone-identity' });
   const title = el('h2', { className: 'phone-title' });
   const close = el('button', { className: 'phone-close', 'aria-label': localize('runtime.closePhone', '关闭小手机'), text: '×', onClick: () => { open = false; render(); } });
-  topbar.append(identity, title, close);
+  topbar.append(homeBack, identity, title, close);
   const content = el('main', { className: 'phone-content' });
   const nav = el('nav', { className: 'phone-nav', 'aria-label': '微信导航' });
   shell.append(topbar, content, nav);
@@ -84,6 +92,22 @@ export function mountPhone(root, options = {}) {
 
   async function save() {
     if (storage?.saveGlobal) await storage.saveGlobal(state);
+  }
+
+  async function addCandidates(candidates, source = 'manual') {
+    const stamped = (Array.isArray(candidates) ? candidates : []).filter((candidate) => candidate?.name).map((candidate, index) => ({
+      ...candidate,
+      id: candidate.id || `candidate:${source}:${Date.now()}:${index}`,
+      status: candidate.status || 'pending',
+      detectedAt: candidate.detectedAt || new Date().toISOString(),
+    }));
+    if (!stamped.length) return [];
+    const existing = new Set((state.candidates || []).map((candidate) => String(candidate.name).toLocaleLowerCase()));
+    const unique = stamped.filter((candidate) => !existing.has(String(candidate.name).toLocaleLowerCase()));
+    if (!unique.length) return [];
+    state.candidates = [...(state.candidates || []), ...unique];
+    await save();
+    return unique;
   }
 
   function renderHome() {
@@ -126,9 +150,35 @@ export function mountPhone(root, options = {}) {
     const enabled = el('input', { type: 'checkbox', checked: state.detection.enabled ? 'checked' : undefined, 'aria-label': '启用角色检测' });
     const threshold = el('input', { type: 'number', min: '1', max: '100', value: String(state.detection.roundThreshold), 'aria-label': '检测回合阈值' });
     const saveSettings = el('button', { className: 'phone-button primary', text: '保存检测设置', onClick: async () => { state.detection = { ...state.detection, enabled: enabled.checked, roundThreshold: Math.max(1, Number(threshold.value) || 5) }; await save(); await notify('角色检测设置已保存'); } });
+    const manualDetect = el('button', { className: 'phone-button primary', 'data-action': 'manual-detect', text: '手动检测当前剧情', onClick: async () => {
+      if (!manualDetection) return notify('手动检测服务暂不可用');
+      manualDetect.disabled = true;
+      try {
+        const found = await manualDetection.detect();
+        if (storage?.loadGlobal) state = mergeState(await storage.loadGlobal() || state);
+        const added = await addCandidates(found, 'manual');
+        await notify(added.length ? `发现 ${added.length} 个待确认角色` : '没有发现新的角色');
+        render();
+      } catch (error) { await notify(error.message || '手动检测失败'); manualDetect.disabled = false; }
+    } });
+    const rolePrompt = el('textarea', { 'data-action': 'role-prompt', placeholder: '描述你想生成的角色，例如：住在灯塔的修理师…', 'aria-label': '角色描述' });
+    const generateRole = el('button', { className: 'phone-button', 'data-action': 'generate-role', text: '根据描述生成角色卡', onClick: async () => {
+      if (!adapter?.oneOffGenerate || !rolePrompt.value.trim()) return notify('请先输入角色描述');
+      generateRole.disabled = true;
+      try {
+        const raw = await adapter.oneOffGenerate([
+          '根据用户描述生成一个可编辑的角色卡候选。只输出 JSON：{"candidates":[{"name":"","aliases":[],"description":"","personality":"","scenario":"","first_mes":"","tags":[]}]。',
+          `用户描述：${rolePrompt.value.trim()}`,
+        ].join('\n\n'), { context: false });
+        const added = await addCandidates(parseDetectorResponse(raw), 'prompt');
+        await notify(added.length ? '角色候选已生成，请确认创建' : '没有生成有效角色卡');
+        render();
+      } catch (error) { await notify(error.message || '角色生成失败'); generateRole.disabled = false; }
+    } });
     const candidates = state.candidates.length ? state.candidates.map(candidateCard) : [el('p', { className: 'phone-muted', text: '还没有待确认角色' })];
     content.replaceChildren(el('div', { className: 'phone-section' }, [
       el('div', { className: 'phone-card' }, [el('div', { className: 'phone-row' }, [el('strong', { text: '对话轮数检测' }), el('span', { className: 'phone-pill', text: `${state.detection.roundThreshold} 回合` })]), el('label', { className: 'phone-row', text: '启用检测' }, [enabled]), el('div', { className: 'phone-field' }, [el('label', { text: '每几个完整回合检测' }), threshold]), saveSettings]),
+      el('div', { className: 'phone-card phone-section' }, [el('strong', { text: '立即检测或生成' }), manualDetect, el('div', { className: 'phone-field' }, [el('label', { text: '根据描述生成角色' }), rolePrompt]), generateRole]),
       el('div', { className: 'phone-section' }, [el('strong', { text: '待确认角色' }), ...candidates]),
     ]));
     nav.replaceChildren();
@@ -137,33 +187,59 @@ export function mountPhone(root, options = {}) {
   function renderImport() {
     title.textContent = localize('apps.import', '内容导入');
     const config = state.github;
-    const owner = el('input', { className: 'github-owner', value: config.owner, placeholder: 'owner' });
-    const repo = el('input', { className: 'github-repo', value: config.repo, placeholder: 'repo' });
+    const repository = el('input', { className: 'github-repository', value: config.repository || [config.owner, config.repo].filter(Boolean).join('/'), placeholder: 'owner/repo 或 https://github.com/owner/repo' });
     const branch = el('input', { className: 'github-branch', value: config.branch || 'main', placeholder: 'main' });
-    const rootPath = el('input', { className: 'github-root', value: config.rootPath || '', placeholder: '可选目录' });
     const token = el('input', { className: 'github-token', type: 'password', value: config.token || '', placeholder: '可选 token' });
     const fileList = el('div', { className: 'phone-section' });
+    let repositoryFiles = [];
+    let repositoryPath = '';
+    let activeConfig = state.github;
     const persistGithubConfig = async () => {
-      const nextConfig = { ...state.github, owner: owner.value.trim(), repo: repo.value.trim(), branch: branch.value.trim() || 'main', rootPath: rootPath.value.trim(), token: token.value };
+      const nextConfig = { repository: repository.value.trim(), branch: branch.value.trim() || 'main', token: token.value };
       state.github = nextConfig;
       await save();
       return nextConfig;
     };
-    const saveConfig = el('button', { className: 'phone-button', text: '保存仓库配置', onClick: async () => { await persistGithubConfig(); await notify('GitHub 配置已保存'); } });
-    const browse = el('button', { className: 'phone-button primary', text: '测试并浏览文件', onClick: async () => {
+    const renderDirectory = () => {
+      const prefix = repositoryPath ? `${repositoryPath}/` : '';
+      const entries = new Map();
+      repositoryFiles.forEach((file) => {
+        if (!file?.path || !file.path.startsWith(prefix)) return;
+        const relative = file.path.slice(prefix.length);
+        if (!relative) return;
+        const parts = relative.split('/');
+        const name = parts[0];
+        if (parts.length > 1) entries.set(`directory:${name}`, { kind: 'directory', name, path: `${prefix}${name}` });
+        else entries.set(`file:${file.path}`, { kind: 'file', name, path: file.path });
+      });
+      const rows = [];
+      if (repositoryPath) rows.push(el('button', { className: 'phone-button', 'data-action': 'github-up', text: '‹ 上一级目录', onClick: () => { repositoryPath = repositoryPath.split('/').slice(0, -1).join('/'); renderDirectory(); } }));
+      const sorted = [...entries.values()].sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name));
+      rows.push(...sorted.map((entry) => entry.kind === 'directory'
+        ? el('button', { className: 'phone-app-card', 'data-action': 'github-directory', onClick: () => { repositoryPath = entry.path; renderDirectory(); } }, [el('span', { text: `📁 ${entry.name}` }), el('small', { text: '打开目录' })])
+        : el('div', { className: 'phone-card phone-row' }, [el('span', { text: `📄 ${entry.name}` }), el('button', { className: 'phone-button', text: '导入', onClick: async () => { try { await importService.importFile({ config: activeConfig, path: entry.path, conflict: 'new' }); await notify('导入成功'); } catch (error) { await notify(error.message || '导入失败'); } } })])));
+      if (!rows.length) rows.push(el('p', { className: 'phone-muted', text: repositoryFiles.length ? '当前目录没有文件' : '请先加载仓库目录' }));
+      fileList.replaceChildren(...rows);
+    };
+    const browse = el('button', { className: 'phone-button primary', 'data-action': 'github-load', text: '加载仓库目录', onClick: async () => {
       const currentConfig = await persistGithubConfig();
       if (!importService) return notify('GitHub 导入服务暂不可用');
+      browse.disabled = true;
       try {
-        const files = await importService.client.listFiles(currentConfig);
-        fileList.replaceChildren(...files.map((file) => el('div', { className: 'phone-card phone-row' }, [el('span', { text: file.path }), el('button', { className: 'phone-button', text: '导入', onClick: async () => { try { await importService.importFile({ config: state.github, path: file.path, conflict: 'new' }); await notify('导入成功'); } catch (error) { await notify(error.message || '导入失败'); } } })])));
+        activeConfig = currentConfig;
+        repositoryFiles = await importService.client.listFiles(currentConfig);
+        repositoryPath = '';
+        renderDirectory();
       } catch (error) { await notify(error.message || 'GitHub 连接失败'); }
+      finally { browse.disabled = false; }
     } });
     content.replaceChildren(el('div', { className: 'phone-section' }, [
       el('div', { className: 'phone-card phone-section' }, [el('strong', { text: 'GitHub 仓库' }), ...[
-        ['owner', owner, 'Owner'], ['repo', repo, 'Repo'], ['branch', branch, 'Branch'], ['root', rootPath, '目录'], ['token', token, 'Token'],
-      ].map(([, input, label]) => el('div', { className: 'phone-field' }, [el('label', { text: label }), input])), el('div', { className: 'phone-row' }, [saveConfig, browse])]),
+        ['repository', repository, '仓库'], ['branch', branch, '分支'], ['token', token, 'Token'],
+      ].map(([, input, label]) => el('div', { className: 'phone-field' }, [el('label', { text: label }), input])), el('div', { className: 'phone-row' }, [browse])]),
       fileList,
     ]));
+    renderDirectory();
     nav.replaceChildren();
   }
 
@@ -236,6 +312,7 @@ export function mountPhone(root, options = {}) {
   function render() {
     launcher.hidden = open;
     shell.hidden = !open;
+    homeBack.hidden = !open || page === 'home';
     const current = state.identities.find((item) => item.id === state.activeIdentityId);
     identity.textContent = `身份 · ${current?.name || '用户'}`;
     if (!open) return;
